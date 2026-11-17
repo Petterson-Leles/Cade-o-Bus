@@ -8,7 +8,11 @@ import {
   normalizeThemeName,
   readThemeName,
   writeThemeName,
-  CSS
+  CSS,
+  GRADIENT,
+  ETA_BANDS,
+  etaColor,
+  etaLabel
 } from '../utils/colors.js'
 import { settingsPayload, parseSettingsResult, parseDetailParams, FAVORITES_KEY } from '../utils/favorites.js'
 
@@ -40,8 +44,8 @@ const cssHex = (s) => parseInt(s.slice(1), 16)
 test('getTheme devolve o tema pedido', () => {
   assert.equal(getTheme('dark'), THEMES.dark)
   assert.equal(getTheme('light'), THEMES.light)
-  assert.equal(getTheme('light').bg, 0xf5efe3)
-  assert.equal(getTheme('dark').bg, 0x000000)
+  assert.equal(getTheme('light').bg, 0xf7f1e6)
+  assert.equal(getTheme('dark').bg, 0x141a21)
 })
 
 test('valores desconhecidos caem no tema escuro', () => {
@@ -61,28 +65,77 @@ test('os dois temas têm os mesmos papéis de cor', () => {
   }
 })
 
-test('paleta Minas nos papéis certos', () => {
+test('paleta Pôr do sol nos papéis certos', () => {
   for (const t of Object.values(THEMES)) {
-    assert.equal(t.title, 0xd52b1e)
-    assert.equal(t.button, 0x1f4e8c)
-    assert.equal(t.divider, 0xa0522d)
+    assert.equal(t.button, 0x2e7d78)
+    assert.equal(t.buttonText, 0xffffff)
+    assert.equal(t.title, t.text)
   }
-  assert.equal(THEMES.dark.eta, 0xe8b23a)
-  assert.equal(THEMES.dark.text, 0xf5efe3)
-  assert.equal(THEMES.light.text, 0x2b1d14)
+  assert.equal(THEMES.dark.text, 0xf3e3c3)
+  assert.equal(THEMES.dark.muted, 0x9aa5a8)
+  assert.equal(THEMES.dark.divider, 0x2a3540)
+  assert.equal(THEMES.dark.error, 0xf07a60)
+  assert.equal(THEMES.light.text, 0x2b3440)
+  assert.equal(THEMES.light.divider, 0xe3d9c6)
+  assert.equal(THEMES.light.error, 0xb5383a)
+  assert.deepEqual(GRADIENT, [0x3b4b5c, 0x2e7d78, 0xa8c9a0, 0xe8d3a0, 0xffb088, 0xf07a60, 0xb5383a, 0x5e2b24])
+  assert.deepEqual(CSS.gradient.map(cssHex), GRADIENT)
+  assert.equal(CSS.bg, '#F7F1E6')
+  assert.equal(CSS.primary, '#2E7D78')
 })
 
 test('contraste legível em cada tema', () => {
   for (const t of Object.values(THEMES)) {
-    for (const k of ['text', 'muted', 'eta']) {
+    // Texto pequeno: 4.5:1.
+    for (const k of ['text', 'title', 'muted', 'error']) {
       assert.ok(contrast(t[k], t.bg) >= 4.5, `${t.name}.${k}: ${contrast(t[k], t.bg).toFixed(2)}`)
     }
-    // Erro no claro é o vermelho de Minas pedido (#D52B1E, 4.37:1): aceita ~4.5.
-    assert.ok(contrast(t.error, t.bg) >= 4.5, `${t.name}.error`)
-    // Título só aparece em texto grande (>= 24 px): basta 3:1.
-    assert.ok(contrast(t.title, t.bg) >= 3, `${t.name}.title`)
+    // Número grande: basta 3:1.
+    assert.ok(contrast(t.eta, t.bg) >= 3, `${t.name}.eta`)
     assert.ok(contrast(t.buttonText, t.button) >= 4.5, `${t.name}.buttonText`)
     assert.ok(contrast(t.buttonText, t.buttonPressed) >= 4.5, `${t.name}.buttonPressed`)
+  }
+})
+
+test('cores do tempo de chegada: >= 3:1 (número e rótulo grandes) no fundo do tema', () => {
+  for (const band of ETA_BANDS) {
+    for (const name of ['dark', 'light']) {
+      const r = contrast(band[name], THEMES[name].bg)
+      assert.ok(r >= 3, `${band.label} ${name}: ${r.toFixed(2)}`)
+    }
+  }
+})
+
+test('etaColor esquenta quando o ônibus está perto', () => {
+  const cases = [
+    [0, 0xf07a60, 0xb5383a, 'chegando: corre!'],
+    [1, 0xf07a60, 0xb5383a, 'chegando: corre!'],
+    [2, 0xf07a60, 0xb5383a, 'chegando: corre!'],
+    [3, 0xffb088, 0xc25a2e, 'já já'],
+    [5, 0xffb088, 0xc25a2e, 'já já'],
+    [6, 0xe8d3a0, 0x8a6a1f, 'dá tempo'],
+    [10, 0xe8d3a0, 0x8a6a1f, 'dá tempo'],
+    [11, 0xa8c9a0, 0x3f7a4a, 'tranquilo'],
+    [15, 0xa8c9a0, 0x3f7a4a, 'tranquilo'],
+    [16, 0x4fa39c, 0x2e7d78, 'longe'],
+    [90, 0x4fa39c, 0x2e7d78, 'longe']
+  ]
+  for (const [min, dark, light, label] of cases) {
+    assert.equal(etaColor(min, 'dark'), dark, `dark ${min}`)
+    assert.equal(etaColor(min, 'light'), light, `light ${min}`)
+    assert.equal(etaLabel(min), label, `label ${min}`)
+  }
+  // Limites fracionários e texto numérico.
+  assert.equal(etaLabel(2.5), 'já já')
+  assert.equal(etaLabel('4'), 'já já')
+})
+
+test('etaColor: tema desconhecido cai no escuro e minuto inválido em "longe"', () => {
+  assert.equal(etaColor(1, 'roxo'), 0xf07a60)
+  assert.equal(etaColor(1, undefined), 0xf07a60)
+  for (const v of [NaN, null, undefined, '', 'abc', {}]) {
+    assert.equal(etaLabel(v), 'longe', String(v))
+    assert.equal(etaColor(v, 'light'), 0x2e7d78)
   }
 })
 
@@ -93,7 +146,7 @@ test('contraste legível na tela de configurações', () => {
   ]
   for (const [fg, bg] of pairs) {
     const r = contrast(cssHex(CSS[fg]), cssHex(CSS[bg]))
-    assert.ok(r >= 4.3, `${fg}/${bg}: ${r.toFixed(2)}`)
+    assert.ok(r >= 4.5, `${fg}/${bg}: ${r.toFixed(2)}`)
   }
   assert.ok(contrast(0xffffff, cssHex(CSS.danger)) >= 4.5)
 })

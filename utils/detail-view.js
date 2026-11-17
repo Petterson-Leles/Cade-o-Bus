@@ -1,0 +1,56 @@
+// Cálculos puros da tela do ponto (sem APIs do relógio), testados no Node.
+import { formatDistance } from '../shared/bhtrans.js'
+
+// Metros por grau de latitude (aproximação esférica, boa para alguns km).
+const M_PER_DEG = 111320
+
+// Escala fixa do mini mapa e raio máximo (em pixels de design, antes do px()).
+export const MAP_PX_PER_KM = 90
+export const MAP_MAX_R = 100
+
+function num(v) {
+  if (v === null || v === undefined || v === '') return NaN
+  return Number(String(v).trim().replace(',', '.'))
+}
+
+// Deslocamento do ônibus em relação ao ponto, em pixels de tela:
+// dx > 0 = leste (direita), dy > 0 = sul (para baixo). Fica limitado ao
+// círculo de raio maxR (clamped = true quando foi puxado para a borda).
+// Devolve null se faltar coordenada.
+export function mapOffset(stop, bus, { pxPerKm = MAP_PX_PER_KM, maxR = MAP_MAX_R } = {}) {
+  if (!stop || !bus) return null
+  const sLat = num(stop.lat)
+  const sLon = num(stop.lon)
+  const bLat = num(bus.lat)
+  const bLon = num(bus.lon)
+  if (![sLat, sLon, bLat, bLon].every(Number.isFinite)) return null
+  const northM = (bLat - sLat) * M_PER_DEG
+  const eastM = (bLon - sLon) * M_PER_DEG * Math.cos((sLat * Math.PI) / 180)
+  let dx = (eastM / 1000) * pxPerKm
+  let dy = (-northM / 1000) * pxPerKm
+  const r = Math.sqrt(dx * dx + dy * dy)
+  const clamped = r > maxR
+  if (clamped) {
+    dx = (dx / r) * maxR
+    dy = (dy / r) * maxR
+  }
+  return { dx: Math.round(dx) || 0, dy: Math.round(dy) || 0, clamped }
+}
+
+// Tamanho da fonte do número grande para caber na coluna da esquerda (~190 px).
+export function etaFontSize(min) {
+  const digits = String(min).length
+  if (digits <= 1) return 190
+  if (digits === 2) return 150
+  return 100
+}
+
+// Linha de baixo: "1,2 km · depois 11 e 19 min".
+export function infoLine(first, rest) {
+  if (!first) return ''
+  const dist = formatDistance(first.distanceM)
+  const next = (rest || []).slice(0, 2).map((b) => b.etaMin)
+  if (next.length === 0) return `${dist} · ônibus ${first.vehicle}`
+  if (next.length === 1) return `${dist} · depois ${next[0]} min`
+  return `${dist} · depois ${next[0]} e ${next[1]} min`
+}

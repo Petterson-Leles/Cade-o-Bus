@@ -1,16 +1,30 @@
-// Tela de um ponto: destaca o ônibus que chega primeiro e lista os seguintes. Atualiza 30 s após cada resposta.
+// Tela de um ponto (layout "B"): número grande do ônibus que chega primeiro à
+// esquerda, mini mapa à direita e os seguintes numa linha embaixo.
+// Atualiza 30 s após cada resposta.
 import * as hmUI from '@zos/ui'
 import { px } from '@zos/utils'
 import { BasePage } from '@zeppos/zml/base-page'
-import { formatDistance } from '../../shared/bhtrans'
-import { DEVICE_WIDTH, DEVICE_HEIGHT, getTheme } from '../../utils/ui'
+import { DEVICE_WIDTH, DEVICE_HEIGHT, getTheme, etaColor, etaLabel } from '../../utils/ui'
 import { parseDetailParams, parseSettingsResult } from '../../utils/favorites'
+import { mapOffset, etaFontSize, infoLine, MAP_PX_PER_KM } from '../../utils/detail-view'
 
 const REFRESH_MS = 30 * 1000
 const DOTS_MS = 500
 const MAX_OTHERS = 2
 // Posição do GPS mais velha que isso ganha aviso.
 const STALE_SEC = 120
+
+// Coluna do número (esquerda) e área do mini mapa (direita), em pixels de design.
+const NUM_X = 40
+const NUM_W = 190
+const MAP_CX = 345
+const MAP_CY = 240
+const MAP_RING_R = 104 // borda do mapa
+const BUS_R = 12 // marcador do primeiro ônibus
+const OTHER_R = 6 // marcadores dos seguintes
+const STOP_R = 10 // marcador do ponto
+// O centro do marcador fica dentro do anel.
+const MAP_MAX_R = MAP_RING_R - BUS_R
 
 // Largura centralizada que cabe na tela redonda a partir de uma margem lateral.
 const box = (margin) => ({ x: margin, w: DEVICE_WIDTH - 2 * margin })
@@ -89,32 +103,81 @@ Page(
       // Fundo do tema: primeiro widget, cobre a tela toda.
       this.widget(hmUI.widget.FILL_RECT, { x: 0, y: 0, w: DEVICE_WIDTH, h: DEVICE_HEIGHT, color: c.bg })
 
-      // Cabeçalho: linha em vermelho de Minas, nome do ponto em secundário.
-      this.text({ ...box(px(100)), y: px(40), h: px(40), text: `Linha ${fav.line}`, text_size: px(28), color: c.title })
-      this.text({ ...box(px(80)), y: px(80), h: px(34), text: fav.name, text_size: px(24), color: c.muted })
+      // Cabeçalho pequeno: "Casa · Linha 9250".
+      this.text({ ...box(px(110)), y: px(44), h: px(34), text: `${fav.name} · Linha ${fav.line}`, text_size: px(24), color: c.text })
 
-      // Ônibus mais próximo: número grande em ouro para ler em 1 segundo.
-      w.eta = this.text({ ...box(px(60)), y: px(118), h: px(140), text_size: px(124), color: c.eta })
-      w.etaSub = this.text({ ...box(px(60)), y: px(256), h: px(40), text_size: px(30), color: c.text })
-      w.etaAge = this.text({ ...box(px(70)), y: px(296), h: px(30), text_size: px(22), color: c.muted })
+      // Coluna da esquerda: número grande (cor pela proximidade), "min" e rótulo.
+      w.eta = this.text({ x: px(NUM_X), y: px(92), w: px(NUM_W), h: px(200), text_size: px(190), color: c.eta })
+      w.etaMin = this.text({ x: px(NUM_X), y: px(268), w: px(NUM_W), h: px(40), text_size: px(32), color: c.text, text: 'min' })
+      w.etaLabel = this.text({ x: px(30), y: px(310), w: px(210), h: px(34), text_size: px(24), color: c.eta })
 
-      // Próximos ônibus, abaixo de um filete cor de terra.
-      w.divider = this.widget(hmUI.widget.FILL_RECT, {
-        x: px(150),
-        y: px(336),
-        w: DEVICE_WIDTH - 2 * px(150),
-        h: px(2),
-        radius: px(1),
+      // Metade direita: mini mapa com escala fixa (1 km = 90 px).
+      // Anel = disco na cor da divisória com disco do fundo por cima.
+      w.mapRing = this.widget(hmUI.widget.CIRCLE, {
+        center_x: px(MAP_CX),
+        center_y: px(MAP_CY),
+        radius: px(MAP_RING_R),
         color: c.divider
       })
-      w.others = []
+      w.mapInner = this.widget(hmUI.widget.CIRCLE, {
+        center_x: px(MAP_CX),
+        center_y: px(MAP_CY),
+        radius: px(MAP_RING_R - 3),
+        color: c.bg
+      })
+      // Cruz fina no centro para orientar (norte para cima).
+      w.mapCrossH = this.widget(hmUI.widget.FILL_RECT, {
+        x: px(MAP_CX - MAP_RING_R + 8),
+        y: px(MAP_CY) - 1,
+        w: px(2 * (MAP_RING_R - 8)),
+        h: 2,
+        color: c.divider
+      })
+      w.mapCrossV = this.widget(hmUI.widget.FILL_RECT, {
+        x: px(MAP_CX) - 1,
+        y: px(MAP_CY - MAP_RING_R + 8),
+        w: 2,
+        h: px(2 * (MAP_RING_R - 8)),
+        color: c.divider
+      })
+      // Ponto: alvo (disco na cor do texto com miolo do fundo).
+      w.stopOuter = this.widget(hmUI.widget.CIRCLE, {
+        center_x: px(MAP_CX),
+        center_y: px(MAP_CY),
+        radius: px(STOP_R),
+        color: c.text
+      })
+      w.stopInner = this.widget(hmUI.widget.CIRCLE, {
+        center_x: px(MAP_CX),
+        center_y: px(MAP_CY),
+        radius: px(STOP_R - 4),
+        color: c.bg
+      })
+      // Ônibus seguintes (menores, cinza) e o primeiro por cima, na cor do tempo.
+      w.otherDots = []
       for (let i = 0; i < MAX_OTHERS; i++) {
-        w.others.push(
-          this.text({ ...box(px(90)), y: px(342) + i * px(30), h: px(30), text_size: px(26), color: c.text })
+        w.otherDots.push(
+          this.widget(hmUI.widget.CIRCLE, {
+            center_x: px(MAP_CX),
+            center_y: px(MAP_CY),
+            radius: px(OTHER_R),
+            color: c.muted
+          })
         )
       }
+      w.busDot = this.widget(hmUI.widget.CIRCLE, {
+        center_x: px(MAP_CX),
+        center_y: px(MAP_CY),
+        radius: px(BUS_R),
+        color: c.eta
+      })
+      // Aviso de GPS velho, logo abaixo do mapa.
+      w.etaAge = this.text({ x: px(250), y: px(344), w: px(190), h: px(26), text_size: px(20), color: c.error })
 
-      // Estados sem dados (carregando, vazio, erro): título + detalhe.
+      // Linha de baixo: distância e os próximos ônibus.
+      w.info = this.text({ ...box(px(70)), y: px(372), h: px(30), text_size: px(22), color: c.muted })
+
+      // Estados sem dados (carregando, vazio, erro, sem conexão): título + detalhe.
       w.statusTitle = this.text({ ...box(px(60)), y: px(160), h: px(56), text_size: px(36), color: c.text })
       w.statusDetail = this.text({
         ...box(px(70)),
@@ -126,7 +189,7 @@ Page(
         text_style: hmUI.text_style.WRAP
       })
 
-      // Rodapé: em y 404-432 a tela redonda tem ~288 px visíveis; a caixa tem 280.
+      // Rodapé (horário): em y 404-432 a tela redonda tem ~288 px visíveis; a caixa tem 280.
       w.footer = this.text({ ...box(px(100)), y: px(404), h: px(28), text_size: px(20), color: c.muted })
       w.footer.setProperty(hmUI.prop.TEXT, this.state.footerText)
     },
@@ -167,7 +230,11 @@ Page(
 
     dataWidgets() {
       const w = this.state.w
-      return [w.eta, w.etaSub, w.etaAge, w.divider, ...w.others]
+      return [
+        w.eta, w.etaMin, w.etaLabel, w.etaAge, w.info,
+        w.mapRing, w.mapInner, w.mapCrossH, w.mapCrossV, w.stopOuter, w.stopInner,
+        ...w.otherDots, w.busDot
+      ]
     },
 
     stopDots() {
@@ -225,7 +292,6 @@ Page(
     show(buses, error) {
       if (this.state.destroyed) return
       const w = this.state.w
-      const c = this.colors()
       if (error === 'offline') {
         this.showStatus('Sem conexão', 'Abra o app Zepp no celular e deixe o Bluetooth ligado.', 'error')
         this.setFooter('Nova tentativa em 30 s')
@@ -243,25 +309,47 @@ Page(
       }
 
       const [first, ...rest] = buses
+      const others = rest.slice(0, MAX_OTHERS)
+      const c = this.colors()
+      const hot = etaColor(first.etaMin, this.state.theme)
       this.state.view = { kind: 'data', buses }
       this.stopDots()
       this.state.hasData = true
       this.setVisible([w.statusTitle, w.statusDetail], false)
-      this.setVisible([w.eta, w.etaSub, w.etaAge], true)
+      this.setVisible(this.dataWidgets(), true)
 
-      w.eta.setProperty(hmUI.prop.TEXT, String(first.etaMin))
-      w.etaSub.setProperty(hmUI.prop.TEXT, `min · ${formatDistance(first.distanceM)}`)
+      // Número grande: fonte menor com 2 ou 3 dígitos para caber na coluna.
+      const n = String(first.etaMin)
+      w.eta.setProperty(hmUI.prop.MORE, { text_size: px(etaFontSize(n)) })
+      w.eta.setProperty(hmUI.prop.TEXT, n)
+      w.eta.setProperty(hmUI.prop.COLOR, hot)
+      w.etaLabel.setProperty(hmUI.prop.TEXT, etaLabel(first.etaMin))
+      w.etaLabel.setProperty(hmUI.prop.COLOR, hot)
+
       const stale = first.ageSec !== null && first.ageSec !== undefined && first.ageSec >= STALE_SEC
-      w.etaAge.setProperty(hmUI.prop.TEXT, stale ? ageText(first.ageSec) : `Ônibus ${first.vehicle}`)
-      w.etaAge.setProperty(hmUI.prop.COLOR, stale ? c.error : c.muted)
+      w.etaAge.setProperty(hmUI.prop.TEXT, stale ? ageText(first.ageSec) : '')
+      w.info.setProperty(hmUI.prop.TEXT, infoLine(first, others))
 
-      const others = rest.slice(0, MAX_OTHERS)
-      w.divider.setProperty(hmUI.prop.VISIBLE, others.length > 0)
-      w.others.forEach((t, i) => {
-        const b = others[i]
-        t.setProperty(hmUI.prop.VISIBLE, !!b)
-        if (b) t.setProperty(hmUI.prop.TEXT, `${b.etaMin} min · ${formatDistance(b.distanceM)}`)
+      // Mini mapa: ônibus na posição relativa ao ponto (sem lat/lon, some).
+      const stop = this.state.fav
+      // MORE recebe todas as propriedades do círculo de uma vez.
+      const place = (dot, bus, r, color) => {
+        const o = mapOffset(stop, bus, { pxPerKm: MAP_PX_PER_KM, maxR: MAP_MAX_R })
+        dot.setProperty(hmUI.prop.VISIBLE, !!o)
+        if (o) {
+          dot.setProperty(hmUI.prop.MORE, {
+            center_x: px(MAP_CX + o.dx),
+            center_y: px(MAP_CY + o.dy),
+            radius: px(r),
+            color
+          })
+        }
+      }
+      w.otherDots.forEach((dot, i) => {
+        if (others[i]) place(dot, others[i], OTHER_R, c.muted)
+        else dot.setProperty(hmUI.prop.VISIBLE, false)
       })
+      place(w.busDot, first, BUS_R, hot)
 
       this.setFooter(`Atualizado ${clock()}`)
     },

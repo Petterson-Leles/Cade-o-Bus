@@ -62,6 +62,19 @@ test('nearestBuses filtra pela linha e ordena pela chegada', () => {
   assert.equal(buses[2].etaMin, 5)
 })
 
+test('nearestBuses devolve a posição (lat/lon) de cada ônibus', () => {
+  const buses = nearestBuses(parseCsv(CSV), { line: '1234', lat: -19.9191, lon: -43.9386, now: NOW })
+  assert.deepEqual(
+    buses.map((b) => [b.vehicle, b.lat, b.lon]),
+    [
+      ['40001', -19.9191, -43.9386],
+      ['40004', -19.92, -43.9386],
+      ['40002', -19.93, -43.9386]
+    ]
+  )
+  for (const b of buses) assert.ok(Number.isFinite(b.lat) && Number.isFinite(b.lon))
+})
+
 test('formatDistance', () => {
   assert.equal(formatDistance(350), '350 m')
   assert.equal(formatDistance(1530), '1,5 km')

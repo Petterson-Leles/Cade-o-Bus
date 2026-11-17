@@ -21,7 +21,7 @@ const buttonStyle = (bg, color) => ({
   marginTop: '8px'
 })
 
-// Escolha de tema em dois botões lado a lado: o escolhido fica azul colonial.
+// Escolha de tema em dois botões lado a lado: o escolhido fica verde-azulado.
 function themePicker(storage) {
   const current = readThemeName(storage)
   return View(
@@ -141,7 +141,13 @@ AppSettingsPage({
 
     return View({ style: { padding: '12px 20px', background: CSS.bg, minHeight: '100vh' } }, [
       Text({ bold: true, style: { fontSize: '22px', color: CSS.title, marginBottom: '4px' } }, 'Cadê o Busão'),
-      View({ style: { width: '48px', height: '3px', background: CSS.accent, borderRadius: '2px', marginBottom: '8px' } }, []),
+      // Barrinha com 4 cores do gradiente "Pôr do sol", igual à do relógio.
+      View(
+        { style: { display: 'flex', flexDirection: 'row', marginBottom: '8px' } },
+        [CSS.gradient[1], CSS.gradient[3], CSS.gradient[4], CSS.gradient[5]].map((color) =>
+          View({ style: { width: '14px', height: '4px', background: color } }, [])
+        )
+      ),
       Text(
         { paragraph: true, style: { fontSize: '14px', color: CSS.muted } },
         'Uai, é só cadastrar os pontos de ônibus que você usa. Eles aparecem na tela inicial do relógio.'

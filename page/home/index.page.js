@@ -3,7 +3,7 @@ import * as hmUI from '@zos/ui'
 import { px } from '@zos/utils'
 import { push } from '@zos/router'
 import { BasePage } from '@zeppos/zml/base-page'
-import { DEVICE_WIDTH, DEVICE_HEIGHT, getTheme, DEFAULT_THEME } from '../../utils/ui'
+import { DEVICE_WIDTH, DEVICE_HEIGHT, getTheme, DEFAULT_THEME, GRADIENT } from '../../utils/ui'
 import { parseSettingsResult } from '../../utils/favorites'
 
 // Tela redonda: margens maiores no topo e nas laterais.
@@ -12,6 +12,12 @@ const CONTENT_W = DEVICE_WIDTH - 2 * MARGIN
 const LIST_TOP = px(150)
 const ROW_H = px(96) // toque grande (>= 80 px)
 const ROW_GAP = px(16)
+// Barrinha sob o título: segmentos com cores do gradiente "Pôr do sol".
+const BAR_COLORS = [GRADIENT[1], GRADIENT[3], GRADIENT[4], GRADIENT[5]]
+const BAR_SEG_W = px(22)
+const BAR_H = px(4)
+// Espaço entre o nome e a linha no botão (o BUTTON só centraliza o texto).
+const NAME_LINE_SEP = '   '
 // Espaço no fim para o último botão poder rolar até o meio da tela redonda.
 const LIST_BOTTOM_PAD = px(120)
 
@@ -107,14 +113,16 @@ Page(
         align_h: hmUI.align.CENTER_H,
         align_v: hmUI.align.CENTER_V
       })
-      // Filete cor de terra sob o título.
-      this.add(hmUI.widget.FILL_RECT, {
-        x: (DEVICE_WIDTH - px(64)) / 2,
-        y: px(102),
-        w: px(64),
-        h: px(3),
-        radius: px(1),
-        color: c.divider
+      // Barrinha em segmentos do gradiente (azul-verde até o coral) sob o título.
+      const barX = (DEVICE_WIDTH - BAR_COLORS.length * BAR_SEG_W) / 2
+      BAR_COLORS.forEach((color, i) => {
+        this.add(hmUI.widget.FILL_RECT, {
+          x: barX + i * BAR_SEG_W,
+          y: px(102),
+          w: BAR_SEG_W,
+          h: BAR_H,
+          color
+        })
       })
 
       if (view === 'loading') {
@@ -201,7 +209,7 @@ Page(
           w: CONTENT_W,
           h: ROW_H,
           radius: ROW_H / 2,
-          text: `${fav.name} · ${fav.line}`,
+          text: `${fav.name}${NAME_LINE_SEP}${fav.line}`,
           text_size: px(30),
           color: c.buttonText,
           normal_color: c.button,

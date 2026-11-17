@@ -141,6 +141,9 @@ export function nearestBuses(rows, { line, lat, lon, now = Date.now(), limit = 3
       if (ageSec !== null && ageSec > maxAgeSec) return null
       return {
         vehicle: r[COLUMNS.vehicle] || '?',
+        // Posição do ônibus (graus), para o mini mapa do relógio.
+        lat: bLat,
+        lon: bLon,
         distanceM: Math.round(distance),
         etaMin: Math.max(1, Math.round(distance / 1000 / kmh * 60)),
         ageSec

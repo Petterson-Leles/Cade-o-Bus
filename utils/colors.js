@@ -1,45 +1,55 @@
 // Cores do app num módulo sem APIs do relógio, para o setting/ (celular), o
 // app-side e os testes do Node também poderem importar.
 //
-// Paleta "Minas":
-//   vermelho da bandeira de Minas  #D52B1E  destaque / títulos
-//   ouro (Ouro Preto)              #E8B23A  número grande do tempo de chegada
-//   azul colonial                  #1F4E8C  botões (portas e janelas de Ouro Preto)
-//   terra de minério               #A0522D  divisórias e detalhes secundários
-//   branco caiado                  #F5EFE3  fundo do tema claro
+// Paleta "Pôr do sol": azul do anoitecer, verde-azulado, areia e laranja do
+// sol se pondo. O gradiente da marca vai do céu (azul) ao fim de tarde (vinho).
 
 export const THEME_KEY = 'theme'
 export const DEFAULT_THEME = 'dark'
 export const THEME_NAMES = ['dark', 'light']
+
+// Gradiente da marca (0xRRGGBB), do azul do céu ao vinho do fim de tarde.
+// Usado em detalhes (barrinha do título), não em texto.
+export const GRADIENT = Object.freeze([
+  0x3b4b5c, // azul anoitecer
+  0x2e7d78, // verde-azulado (botões)
+  0xa8c9a0, // verde claro
+  0xe8d3a0, // areia
+  0xffb088, // pêssego
+  0xf07a60, // coral
+  0xb5383a, // vermelho
+  0x5e2b24 // vinho
+])
 
 // Papéis de cor usados pelas páginas do relógio (0xRRGGBB).
 // Contraste (WCAG) sobre o fundo de cada tema está anotado ao lado.
 export const THEMES = Object.freeze({
   dark: Object.freeze({
     name: 'dark',
-    bg: 0x000000, // preto AMOLED
-    title: 0xd52b1e, // vermelho de Minas: 4.2:1 (só em texto grande, >= 24 px)
-    eta: 0xe8b23a, // ouro: 10.9:1
-    text: 0xf5efe3, // branco caiado: 18.3:1
-    muted: 0xb8afa3, // 9.7:1
-    button: 0x1f4e8c, // azul colonial
-    buttonPressed: 0x173b69,
-    buttonText: 0xffffff, // 8.3:1 sobre o azul
-    divider: 0xa0522d, // terra de minério
-    error: 0xff6b5c // vermelho mais claro: 7.5:1
+    bg: 0x141a21, // azul-noite
+    title: 0xf3e3c3, // mesmo do texto: 13.8:1
+    eta: 0x4fa39c, // cor padrão do número (longe): 5.9:1
+    text: 0xf3e3c3, // areia clara: 13.8:1
+    muted: 0x9aa5a8, // 6.9:1
+    button: 0x2e7d78, // verde-azulado
+    buttonPressed: 0x24645f,
+    buttonText: 0xffffff, // 4.9:1 sobre o botão
+    divider: 0x2a3540, // filetes (decorativo)
+    error: 0xf07a60 // coral: 6.4:1
   }),
   light: Object.freeze({
     name: 'light',
-    bg: 0xf5efe3, // branco caiado
-    title: 0xd52b1e, // 4.4:1 (só em texto grande)
-    eta: 0x8f620b, // ouro velho: 4.7:1 (o #E8B23A some no creme)
-    text: 0x2b1d14, // marrom café: 14.2:1
-    muted: 0x6b5b4e, // 5.7:1
-    button: 0x1f4e8c,
-    buttonPressed: 0x173b69,
-    buttonText: 0xffffff, // 8.3:1
-    divider: 0xa0522d, // 4.9:1
-    error: 0xb8231a // vermelho de Minas escurecido: 5.6:1 (avisos de 22 px)
+    bg: 0xf7f1e6, // creme
+    title: 0x2b3440, // 11.2:1
+    eta: 0x2e7d78, // 4.3:1 (só no número grande)
+    text: 0x2b3440, // 11.2:1
+    // #66707A dava 4.49:1; escurecido um tico para passar de 4.5:1 em texto pequeno.
+    muted: 0x646e78, // 4.6:1
+    button: 0x2e7d78,
+    buttonPressed: 0x24645f,
+    buttonText: 0xffffff, // 4.9:1
+    divider: 0xe3d9c6, // decorativo
+    error: 0xb5383a // 5.2:1
   })
 })
 
@@ -50,6 +60,36 @@ export function normalizeThemeName(value) {
 
 export function getTheme(name) {
   return THEMES[normalizeThemeName(name)]
+}
+
+// Faixas do tempo de chegada: quanto mais perto, mais quente a cor.
+// max = até quantos minutos (inclusive) a faixa vale.
+export const ETA_BANDS = Object.freeze([
+  Object.freeze({ max: 2, dark: 0xf07a60, light: 0xb5383a, label: 'chegando: corre!' }),
+  Object.freeze({ max: 5, dark: 0xffb088, light: 0xc25a2e, label: 'já já' }),
+  Object.freeze({ max: 10, dark: 0xe8d3a0, light: 0x8a6a1f, label: 'dá tempo' }),
+  Object.freeze({ max: 15, dark: 0xa8c9a0, light: 0x3f7a4a, label: 'tranquilo' }),
+  Object.freeze({ max: Infinity, dark: 0x4fa39c, light: 0x2e7d78, label: 'longe' })
+])
+
+// Minutos inválidos (NaN, null, texto) caem na faixa "longe".
+function etaBand(min) {
+  const n = typeof min === 'number' ? min : Number(min)
+  if (min === null || min === undefined || min === '' || !Number.isFinite(n)) return ETA_BANDS[ETA_BANDS.length - 1]
+  for (let i = 0; i < ETA_BANDS.length; i++) {
+    if (n <= ETA_BANDS[i].max) return ETA_BANDS[i]
+  }
+  return ETA_BANDS[ETA_BANDS.length - 1]
+}
+
+// Cor do número do tempo de chegada (0xRRGGBB) no tema pedido.
+export function etaColor(min, themeName) {
+  return etaBand(min)[normalizeThemeName(themeName)]
+}
+
+// Rótulo curto que acompanha o número.
+export function etaLabel(min) {
+  return etaBand(min).label
 }
 
 // Lê o tema salvo no settingsStorage (celular). Erros de leitura caem no escuro.
@@ -67,18 +107,19 @@ export function writeThemeName(storage, name) {
 
 // Cores da tela de configurações do celular (CSS), seguindo o tema claro.
 export const CSS = {
-  bg: '#F5EFE3', // branco caiado
-  title: '#D52B1E', // vermelho de Minas
-  primary: '#1F4E8C', // azul colonial (botões)
+  bg: '#F7F1E6', // creme
+  title: '#2B3440',
+  primary: '#2E7D78', // verde-azulado (botões)
   primaryText: '#FFFFFF',
-  text: '#2B1D14', // marrom café
-  muted: '#6B5B4E',
-  accent: '#A0522D', // terra de minério
-  border: '#D8C8B0',
-  card: '#FBF7EF',
-  danger: '#D52B1E', // botão "Remover" (texto branco: 5.0:1)
-  dangerText: '#A61F15', // texto de erro sobre dangerBg
+  text: '#2B3440',
+  muted: '#646E78',
+  accent: '#F07A60', // coral (filete sob o título)
+  gradient: ['#3B4B5C', '#2E7D78', '#A8C9A0', '#E8D3A0', '#FFB088', '#F07A60', '#B5383A', '#5E2B24'],
+  border: '#E3D9C6',
+  card: '#FFFBF3',
+  danger: '#B5383A', // botão "Remover" (texto branco: 5.9:1)
+  dangerText: '#9B2F31', // texto de erro sobre dangerBg
   dangerBg: '#FBE3DF',
-  success: '#2E6B30',
+  success: '#356B3F',
   successBg: '#E4F0DC'
 }
