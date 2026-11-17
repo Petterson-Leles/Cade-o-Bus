@@ -1,6 +1,7 @@
 // Lógica pura (sem APIs do Zepp OS) para ler o feed de tempo real da BHTrans.
 // Fica separada para poder ser testada com `npm test` no Node.
 import { lineCodesFor, matchesLine } from './line-codes.js'
+import { parseZoom } from './map-frame.js'
 
 // Feed público de posições GPS dos ônibus de BH (dados abertos da PBH).
 export const BHTRANS_REALTIME_URL = 'https://temporeal.pbh.gov.br/?param=C'
@@ -93,7 +94,7 @@ export function withTimeout(promise, ms) {
   )
 }
 
-// Valida os parâmetros de GET_BUSES. Devolve { line, lat, lon } ou null.
+// Valida os parâmetros de GET_BUSES. Devolve { line, lat, lon, dir?, stopId?, zoom? } ou null.
 export function parseBusParams(params) {
   if (!params || typeof params !== 'object') return null
   const line = typeof params.line === 'string' || typeof params.line === 'number' ? String(params.line).trim() : ''
@@ -106,6 +107,9 @@ export function parseBusParams(params) {
   if (dir === 0 || dir === 1) out.dir = dir
   const stopId = typeof params.stopId === 'string' || typeof params.stopId === 'number' ? String(params.stopId).trim() : ''
   if (/^[A-Za-z0-9_-]{1,30}$/.test(stopId)) out.stopId = stopId
+  // Zoom manual do mini mapa (px por km, 30–260); fora disso = automático.
+  const zoom = parseZoom(params.zoom)
+  if (zoom !== null) out.zoom = zoom
   return out
 }
 
@@ -132,7 +136,8 @@ export function distanceMeters(lat1, lon1, lat2, lon2) {
 // Posições com mais de `maxAgeSec` segundos são descartadas.
 // - codes: códigos NL aceitos (padrão: lineCodesFor(line), ver shared/line-codes.js).
 // - routeDistance(lat, lon, { speed, heading }): opcional; devolve { toStopM, passed } medido ao longo
-//   do trajeto, ou null (ônibus fora da rota: fica a linha reta). Ônibus que já
+//   do trajeto, ou null (ônibus fora da rota: fica a linha reta). Recebe também
+//   o número do veículo (extra.vehicle), para o side service lembrar quem passou. Ônibus que já
 //   passou do ponto (passed) sai da lista.
 export function nearestBuses(rows, { line, codes, lat, lon, now = Date.now(), limit = 3, maxAgeSec = MAX_AGE_SEC, routeDistance = null }) {
   const wanted = Array.isArray(codes) && codes.length > 0 ? codes : lineCodesFor(line)
@@ -151,7 +156,11 @@ export function nearestBuses(rows, { line, codes, lat, lon, now = Date.now(), li
       let distance = distanceMeters(stopLat, stopLon, bLat, bLon)
       let alongRoute = false
       if (typeof routeDistance === 'function') {
-        const onRoute = routeDistance(bLat, bLon, { speed: toNumber(r[COLUMNS.speed]), heading: toNumber(r[COLUMNS.heading]) })
+        const onRoute = routeDistance(bLat, bLon, {
+          speed: toNumber(r[COLUMNS.speed]),
+          heading: toNumber(r[COLUMNS.heading]),
+          vehicle: r[COLUMNS.vehicle] || ''
+        })
         if (onRoute && onRoute.passed) return null
         if (onRoute && Number.isFinite(onRoute.toStopM)) {
           distance = onRoute.toStopM

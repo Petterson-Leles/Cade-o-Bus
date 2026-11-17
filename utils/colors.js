@@ -36,7 +36,10 @@ export const THEMES = Object.freeze({
     buttonText: 0xffffff, // 4.9:1 sobre o botão
     divider: 0x2a3540, // filetes (decorativo)
     route: 0x56636c, // trajeto no mini mapa (decorativo)
-    error: 0xf07a60 // coral: 6.4:1
+    error: 0xf07a60, // coral: 6.4:1
+    card: 0x1d252d, // cartões da tela inicial
+    cardEdge: 0x2a343e, // borda sutil dos cartões
+    cardPressed: 0x26313b
   }),
   light: Object.freeze({
     name: 'light',
@@ -51,7 +54,10 @@ export const THEMES = Object.freeze({
     buttonText: 0xffffff, // 4.9:1
     divider: 0xe3d9c6, // decorativo
     route: 0xb8ad99, // trajeto no mini mapa (decorativo)
-    error: 0xb5383a // 5.2:1
+    error: 0xb5383a, // 5.2:1
+    card: 0xffffff,
+    cardEdge: 0xe3e7ea,
+    cardPressed: 0xeef6f4
   })
 })
 
@@ -66,6 +72,20 @@ export function getTheme(name) {
 
 // Trecho do trajeto entre o ônibus e o ponto, no mini mapa (os dois temas).
 export const ROUTE_HIGHLIGHT = 0x2e7d78
+// Selo da linha (pílula) e o seu ponto no mapa.
+export const CHIP_BG = 0x2e7d78
+export const CHIP_TEXT = 0xffffff
+// Rastro pontilhado do caminho já percorrido pelo ônibus.
+export const TRAIL_COLOR = 0xf07a60
+
+// Mistura duas cores 0xRRGGBB (k = 0 dá `a`, 1 dá `b`). Serve para simular
+// transparência sobre um fundo liso (o TEXT do relógio não tem alpha).
+export function mixColor(a, b, k) {
+  const t = Math.max(0, Math.min(1, Number(k) || 0))
+  const ch = (c, shift) => (c >> shift) & 0xff
+  const m = (shift) => Math.round(ch(a, shift) + (ch(b, shift) - ch(a, shift)) * t)
+  return (m(16) << 16) | (m(8) << 8) | m(0)
+}
 
 // Faixas do tempo de chegada: quanto mais perto, mais quente a cor.
 // max = até quantos minutos (inclusive) a faixa vale.
@@ -103,6 +123,12 @@ export function busIcon(min, themeName) {
   return `bus/${normalizeThemeName(themeName)}-${slug}.png`
 }
 
+// Ônibus que acabou de passar: ícone cinza esmaecido (level 100, 80, 60, 40 ou 20 %).
+export function passedBusIcon(level, themeName) {
+  const l = [100, 80, 60, 40, 20].indexOf(Number(level)) >= 0 ? Number(level) : 100
+  return `bus/${normalizeThemeName(themeName)}-passou-${l}.png`
+}
+
 // Rótulo curto que acompanha o número.
 export function etaLabel(min) {
   return etaBand(min).label
@@ -132,6 +158,12 @@ export const CSS = {
   accent: '#F07A60', // coral (filete sob o título)
   gradient: ['#3B4B5C', '#2E7D78', '#A8C9A0', '#E8D3A0', '#FFB088', '#F07A60', '#B5383A', '#5E2B24'],
   border: '#E3D9C6',
+  white: '#FFFFFF',
+  chosenBg: '#EEF6F4', // linha encontrada, sentido e ponto escolhidos
+  chosenText: '#1F5F5B',
+  chip: '#2E7D78', // selo da linha
+  railLine: '#CFE2DE', // linha vertical da lista de pontos
+  chipSoft: '#E4EFEC',
   card: '#FFFBF3',
   danger: '#B5383A', // botão "Remover" (texto branco: 5.9:1)
   dangerText: '#9B2F31', // texto de erro sobre dangerBg

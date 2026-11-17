@@ -1,11 +1,13 @@
 // Favoritos = pontos de ônibus que você cadastra nas configurações do app
 // (no app Zepp do celular). Cada um: { id, name, line, lat, lon } e, quando o
 // ponto foi escolhido na lista do GTFS, também dir (sentido 0/1) e stopId.
+// Na ida ao relógio o side service acrescenta street (rua do ponto abreviada).
 // Sem APIs do Zepp OS: roda no relógio, no celular e nos testes do Node.
 import { normalizeThemeName, readThemeName } from './colors.js'
 
 export const FAVORITES_KEY = 'favorites'
 export const MAX_TEXT_LEN = 30
+export const MAX_STREET_LEN = 48
 
 function cleanText(value) {
   if (typeof value !== 'string' && typeof value !== 'number') return ''
@@ -49,6 +51,9 @@ export function sanitizeFavorites(list) {
     if (dir !== null) fav.dir = dir
     const stopId = cleanStopId(item.stopId)
     if (stopId) fav.stopId = stopId
+    // Nome do ponto abreviado, acrescentado pelo side service (não é salvo no celular).
+    const street = typeof item.street === 'string' ? item.street.trim().slice(0, MAX_STREET_LEN) : ''
+    if (street) fav.street = street
     out.push(fav)
   })
   return out
