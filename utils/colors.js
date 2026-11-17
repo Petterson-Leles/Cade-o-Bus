@@ -35,6 +35,7 @@ export const THEMES = Object.freeze({
     buttonPressed: 0x24645f,
     buttonText: 0xffffff, // 4.9:1 sobre o botão
     divider: 0x2a3540, // filetes (decorativo)
+    route: 0x56636c, // trajeto no mini mapa (decorativo)
     error: 0xf07a60 // coral: 6.4:1
   }),
   light: Object.freeze({
@@ -49,6 +50,7 @@ export const THEMES = Object.freeze({
     buttonPressed: 0x24645f,
     buttonText: 0xffffff, // 4.9:1
     divider: 0xe3d9c6, // decorativo
+    route: 0xb8ad99, // trajeto no mini mapa (decorativo)
     error: 0xb5383a // 5.2:1
   })
 })
@@ -61,6 +63,9 @@ export function normalizeThemeName(value) {
 export function getTheme(name) {
   return THEMES[normalizeThemeName(name)]
 }
+
+// Trecho do trajeto entre o ônibus e o ponto, no mini mapa (os dois temas).
+export const ROUTE_HIGHLIGHT = 0x2e7d78
 
 // Faixas do tempo de chegada: quanto mais perto, mais quente a cor.
 // max = até quantos minutos (inclusive) a faixa vale.

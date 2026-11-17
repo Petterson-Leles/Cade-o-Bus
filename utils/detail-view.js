@@ -1,5 +1,6 @@
 // Cálculos puros da tela do ponto (sem APIs do relógio), testados no Node.
 import { formatDistance } from '../shared/bhtrans.js'
+import { sanitizeMapPayload } from '../shared/route-map.js'
 
 // Metros por grau de latitude (aproximação esférica, boa para alguns km).
 const M_PER_DEG = 111320
@@ -53,4 +54,15 @@ export function infoLine(first, rest) {
   if (next.length === 0) return `${dist} · ônibus ${first.vehicle}`
   if (next.length === 1) return `${dist} · depois ${next[0]} min`
   return `${dist} · depois ${next[0]} e ${next[1]} min`
+}
+
+// Resposta de GET_BUSES -> { buses, map }. Aceita o formato antigo (só a lista).
+// map passa por sanitizeMapPayload (números inteiros em faixa segura) ou vira null.
+export function parseBusesResult(result) {
+  if (Array.isArray(result)) return { buses: result, map: null }
+  if (!result || typeof result !== 'object') return { buses: [], map: null }
+  return {
+    buses: Array.isArray(result.buses) ? result.buses : [],
+    map: sanitizeMapPayload(result.map)
+  }
 }

@@ -1,12 +1,15 @@
 // Tela de um ponto (layout "B"): número grande do ônibus que chega primeiro à
 // esquerda, mini mapa à direita e os seguintes numa linha embaixo.
+// O mini mapa (trajeto ~1,5 km em volta do ponto, pontos da linha, trecho até o
+// ônibus destacado) chega pronto do celular, já em pixels; aqui só desenha.
 // Atualiza 30 s após cada resposta.
 import * as hmUI from '@zos/ui'
 import { px } from '@zos/utils'
 import { BasePage } from '@zeppos/zml/base-page'
-import { DEVICE_WIDTH, DEVICE_HEIGHT, getTheme, etaColor, etaLabel } from '../../utils/ui'
+import { DEVICE_WIDTH, DEVICE_HEIGHT, getTheme, etaColor, etaLabel, ROUTE_HIGHLIGHT } from '../../utils/ui'
 import { parseDetailParams, parseSettingsResult } from '../../utils/favorites'
-import { mapOffset, etaFontSize, infoLine, MAP_PX_PER_KM } from '../../utils/detail-view'
+import { mapOffset, etaFontSize, infoLine, parseBusesResult } from '../../utils/detail-view'
+import { MAP_PX_PER_KM, MAX_MAP_STOPS } from '../../shared/route-map'
 
 const REFRESH_MS = 30 * 1000
 const DOTS_MS = 500
@@ -23,8 +26,17 @@ const MAP_RING_R = 104 // borda do mapa
 const BUS_R = 12 // marcador do primeiro ônibus
 const OTHER_R = 6 // marcadores dos seguintes
 const STOP_R = 10 // marcador do ponto
+const LINE_STOP_R = 4 // outros pontos da linha
+const ROUTE_W = 3 // espessura do trajeto
+const HI_W = 6 // espessura do trecho ônibus -> ponto
 // O centro do marcador fica dentro do anel.
 const MAP_MAX_R = MAP_RING_R - BUS_R
+// Canvas do trajeto: quadrado em volta do anel.
+const CANVAS_X = MAP_CX - MAP_RING_R
+const CANVAS_Y = MAP_CY - MAP_RING_R
+const CANVAS_SIZE = 2 * MAP_RING_R
+// Coordenada do mapa (relativa ao centro, pixels de design) -> pixel do canvas.
+const cv = (v) => px(MAP_RING_R + v)
 
 // Largura centralizada que cabe na tela redonda a partir de uma margem lateral.
 const box = (margin) => ({ x: margin, w: DEVICE_WIDTH - 2 * margin })
@@ -140,6 +152,24 @@ Page(
         h: px(2 * (MAP_RING_R - 8)),
         color: c.divider
       })
+      // Trajeto (linhas) num CANVAS; os pontos da linha são CIRCLEs por cima.
+      w.mapCanvas = this.widget(hmUI.widget.CANVAS, {
+        x: px(CANVAS_X),
+        y: px(CANVAS_Y),
+        w: px(CANVAS_SIZE),
+        h: px(CANVAS_SIZE)
+      })
+      w.lineStops = []
+      for (let i = 0; i < MAX_MAP_STOPS; i++) {
+        w.lineStops.push(
+          this.widget(hmUI.widget.CIRCLE, {
+            center_x: px(MAP_CX),
+            center_y: px(MAP_CY),
+            radius: px(LINE_STOP_R),
+            color: c.muted
+          })
+        )
+      }
       // Ponto: alvo (disco na cor do texto com miolo do fundo).
       w.stopOuter = this.widget(hmUI.widget.CIRCLE, {
         center_x: px(MAP_CX),
@@ -218,7 +248,7 @@ Page(
       this.state.all.forEach((x) => hmUI.deleteWidget(x))
       this.state.all = []
       this.createWidgets()
-      if (view.kind === 'data') this.show(view.buses, null)
+      if (view.kind === 'data') this.show(view.result, null)
       else if (view.kind === 'status') this.showStatus(view.title, view.detail, view.role)
       else this.showLoading()
       this.setFooter(footer) // show() reescreve o horário; mantém o da última consulta.
@@ -233,8 +263,48 @@ Page(
       return [
         w.eta, w.etaMin, w.etaLabel, w.etaAge, w.info,
         w.mapRing, w.mapInner, w.mapCrossH, w.mapCrossV, w.stopOuter, w.stopInner,
-        ...w.otherDots, w.busDot
+        ...w.lineStops, ...w.otherDots, w.busDot
       ]
+    },
+
+    clearMap() {
+      const canvas = this.state.w.mapCanvas
+      if (canvas) canvas.clear({ x: 0, y: 0, w: px(CANVAS_SIZE), h: px(CANVAS_SIZE) })
+    },
+
+    // Trajeto, trecho destacado e pontos da linha. map já vem validado
+    // (parseBusesResult) e em pixels relativos ao centro; null = só o anel.
+    drawMap(map) {
+      const w = this.state.w
+      const c = this.colors()
+      this.clearMap()
+      const canvas = w.mapCanvas
+      const lines = (pieces, color, width) => {
+        if (!pieces.length) return
+        canvas.setPaint({ color, line_width: px(width) })
+        pieces.forEach((flat) => {
+          for (let i = 0; i + 3 < flat.length; i += 2) {
+            canvas.drawLine({ x1: cv(flat[i]), y1: cv(flat[i + 1]), x2: cv(flat[i + 2]), y2: cv(flat[i + 3]), color })
+          }
+        })
+      }
+      if (map) {
+        lines(map.route, c.route, ROUTE_W)
+        lines(map.hi, ROUTE_HIGHLIGHT, HI_W)
+      }
+      const stops = map ? map.stops : []
+      w.lineStops.forEach((dot, i) => {
+        const has = 2 * i + 1 < stops.length
+        dot.setProperty(hmUI.prop.VISIBLE, has)
+        if (has) {
+          dot.setProperty(hmUI.prop.MORE, {
+            center_x: px(MAP_CX + stops[2 * i]),
+            center_y: px(MAP_CY + stops[2 * i + 1]),
+            radius: px(LINE_STOP_R),
+            color: c.muted
+          })
+        }
+      })
     },
 
     stopDots() {
@@ -261,6 +331,7 @@ Page(
       this.stopDots()
       this.state.hasData = false
       this.setVisible(this.dataWidgets(), false)
+      this.clearMap()
       this.setVisible([w.statusTitle, w.statusDetail], true)
       w.statusTitle.setProperty(hmUI.prop.TEXT, title)
       w.statusTitle.setProperty(hmUI.prop.COLOR, this.colors()[role] || this.colors().text)
@@ -273,14 +344,14 @@ Page(
       this.state.loading = true
       if (this.state.timer) clearTimeout(this.state.timer)
       this.state.timer = null
-      const { line, lat, lon } = this.state.fav
+      const { line, lat, lon, dir, stopId } = this.state.fav
       // Com dados na tela, só avisa no rodapé em vez de apagar tudo.
       if (this.state.hasData) this.setFooter('Atualizando...')
       const done = () => {
         this.state.loading = false
         if (!this.state.destroyed) this.state.timer = setTimeout(() => this.refresh(), REFRESH_MS)
       }
-      this.request({ method: 'GET_BUSES', params: { line, lat, lon } })
+      this.request({ method: 'GET_BUSES', params: { line, lat, lon, dir, stopId } })
         .then((data) => {
           const { result, error } = data || {}
           this.show(result, error)
@@ -289,9 +360,11 @@ Page(
         .then(done, done)
     },
 
-    show(buses, error) {
+    // result: { buses, map } (ou a lista pura do formato antigo).
+    show(result, error) {
       if (this.state.destroyed) return
       const w = this.state.w
+      const { buses, map } = parseBusesResult(result)
       if (error === 'offline') {
         this.showStatus('Sem conexão', 'Abra o app Zepp no celular e deixe o Bluetooth ligado.', 'error')
         this.setFooter('Nova tentativa em 30 s')
@@ -312,7 +385,7 @@ Page(
       const others = rest.slice(0, MAX_OTHERS)
       const c = this.colors()
       const hot = etaColor(first.etaMin, this.state.theme)
-      this.state.view = { kind: 'data', buses }
+      this.state.view = { kind: 'data', result }
       this.stopDots()
       this.state.hasData = true
       this.setVisible([w.statusTitle, w.statusDetail], false)
@@ -330,11 +403,16 @@ Page(
       w.etaAge.setProperty(hmUI.prop.TEXT, stale ? ageText(first.ageSec) : '')
       w.info.setProperty(hmUI.prop.TEXT, infoLine(first, others))
 
-      // Mini mapa: ônibus na posição relativa ao ponto (sem lat/lon, some).
+      this.drawMap(map)
+
+      // Ônibus: posição em pixels vinda do celular; sem ela, calcula em linha reta.
       const stop = this.state.fav
       // MORE recebe todas as propriedades do círculo de uma vez.
-      const place = (dot, bus, r, color) => {
-        const o = mapOffset(stop, bus, { pxPerKm: MAP_PX_PER_KM, maxR: MAP_MAX_R })
+      const place = (dot, bus, index, r, color) => {
+        const fromMap = map && map.buses[index]
+        const o = fromMap
+          ? { dx: fromMap.x, dy: fromMap.y }
+          : mapOffset(stop, bus, { pxPerKm: MAP_PX_PER_KM, maxR: MAP_MAX_R })
         dot.setProperty(hmUI.prop.VISIBLE, !!o)
         if (o) {
           dot.setProperty(hmUI.prop.MORE, {
@@ -346,10 +424,10 @@ Page(
         }
       }
       w.otherDots.forEach((dot, i) => {
-        if (others[i]) place(dot, others[i], OTHER_R, c.muted)
+        if (others[i]) place(dot, others[i], i + 1, OTHER_R, c.muted)
         else dot.setProperty(hmUI.prop.VISIBLE, false)
       })
-      place(w.busDot, first, BUS_R, hot)
+      place(w.busDot, first, 0, BUS_R, hot)
 
       this.setFooter(`Atualizado ${clock()}`)
     },
