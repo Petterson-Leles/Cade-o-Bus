@@ -50,7 +50,7 @@ const NOW = Date.UTC(2026, 10, 17, 15, 0, 30)
 
 test('nearestBuses filtra pela linha e ordena pela chegada', () => {
   const now = NOW
-  const buses = nearestBuses(parseCsv(CSV), { line: '1234', lat: -19.9191, lon: -43.9386, now })
+  const buses = nearestBuses(parseCsv(CSV), { line: '1234', codes: ['1234'], lat: -19.9191, lon: -43.9386, now })
   assert.deepEqual(
     buses.map((b) => b.vehicle),
     ['40001', '40004', '40002']
@@ -63,7 +63,7 @@ test('nearestBuses filtra pela linha e ordena pela chegada', () => {
 })
 
 test('nearestBuses devolve a posição (lat/lon) de cada ônibus', () => {
-  const buses = nearestBuses(parseCsv(CSV), { line: '1234', lat: -19.9191, lon: -43.9386, now: NOW })
+  const buses = nearestBuses(parseCsv(CSV), { line: '1234', codes: ['1234'], lat: -19.9191, lon: -43.9386, now: NOW })
   assert.deepEqual(
     buses.map((b) => [b.vehicle, b.lat, b.lon]),
     [
@@ -82,8 +82,8 @@ test('formatDistance', () => {
 
 test('nearestBuses: ponto com coordenada inválida devolve []', () => {
   const rows = parseCsv(CSV)
-  assert.deepEqual(nearestBuses(rows, { line: '1234', lat: 'abc', lon: -43.9, now: NOW }), [])
-  assert.deepEqual(nearestBuses(rows, { line: '1234', lat: undefined, lon: -43.9, now: NOW }), [])
+  assert.deepEqual(nearestBuses(rows, { line: '1234', codes: ['1234'], lat: 'abc', lon: -43.9, now: NOW }), [])
+  assert.deepEqual(nearestBuses(rows, { line: '1234', codes: ['1234'], lat: undefined, lon: -43.9, now: NOW }), [])
 })
 
 test('nearestBuses descarta posição com mais de maxAgeSec (padrão 10 min)', () => {
@@ -94,9 +94,9 @@ test('nearestBuses descarta posição com mais de maxAgeSec (padrão 10 min)', (
     'sem-hora;-19,9195;-43,9386;semhora;30;1'
   ].join('\n')
   const rows = parseCsv(csv)
-  assert.deepEqual(nearestBuses(rows, { line: '1', lat: -19.9191, lon: -43.9386, now: NOW }).map((b) => b.vehicle), ['novo', 'semhora'])
+  assert.deepEqual(nearestBuses(rows, { line: '1', codes: ['1'], lat: -19.9191, lon: -43.9386, now: NOW }).map((b) => b.vehicle), ['novo', 'semhora'])
   assert.deepEqual(
-    nearestBuses(rows, { line: '1', lat: -19.9191, lon: -43.9386, now: NOW, maxAgeSec: 20 * 60 }).map((b) => b.vehicle),
+    nearestBuses(rows, { line: '1', codes: ['1'], lat: -19.9191, lon: -43.9386, now: NOW, maxAgeSec: 20 * 60 }).map((b) => b.vehicle),
     ['novo', 'velho', 'semhora']
   )
 })
@@ -112,7 +112,7 @@ test('nearestBuses limita a velocidade do ETA a 60 km/h e ordena por etaMin, dep
     '20261117120000;-19,9291;-43,9386;longe;60;1',
     '20261117120000;-19,9201;-43,9386;perto;60;1'
   ].join('\n')
-  const buses = nearestBuses(parseCsv(csv), { line: '1', lat: -19.9191, lon: -43.9386, now: NOW, limit: 4 })
+  const buses = nearestBuses(parseCsv(csv), { line: '1', codes: ['1'], lat: -19.9191, lon: -43.9386, now: NOW, limit: 4 })
   assert.deepEqual(buses.map((b) => b.vehicle), ['perto', 'longe', 'rapido', 'parado'])
   assert.equal(buses[2].etaMin, 6)
   assert.equal(buses[3].etaMin, 9)
@@ -174,8 +174,9 @@ test('nearestBuses: codes (tabela NL) e distância pela rua (routeDistance)', ()
     '557;d;-19,9191;-43,9387;20;;90'
   ].join('\n')
   const rows = parseCsv(csv)
-  // Sem tabela: compara NL com o número da linha.
-  assert.deepEqual(nearestBuses(rows, { line: '9250', lat: -19.9191, lon: -43.9386, now: NOW }).map((x) => x.vehicle), ['c'])
+  // Pela tabela real, a 9250 é o NL 660: o ônibus com NL "9250" é de outra linha e fica de fora.
+  assert.deepEqual(nearestBuses(rows, { line: '9250', lat: -19.9191, lon: -43.9386, now: NOW }).map((x) => x.vehicle), [])
+  assert.deepEqual(nearestBuses(rows, { line: '9250', codes: ['9250'], lat: -19.9191, lon: -43.9386, now: NOW }).map((x) => x.vehicle), ['c'])
   const seen = []
   const routeDistance = (lat, lon, extra) => {
     seen.push(extra.heading)
@@ -199,6 +200,6 @@ test('parseBusParams aceita zoom manual só dentro dos limites', () => {
 test('nearestBuses passa o número do veículo para routeDistance', () => {
   const rows = parseCsv('NL;NV;LT;LG;VL\n9250;40210;-19.91;-43.93;20')
   const seen = []
-  nearestBuses(rows, { line: '9250', lat: -19.92, lon: -43.94, routeDistance: (lat, lon, extra) => (seen.push(extra.vehicle), null) })
+  nearestBuses(rows, { line: '9250', codes: ['9250'], lat: -19.92, lon: -43.94, routeDistance: (lat, lon, extra) => (seen.push(extra.vehicle), null) })
   assert.deepEqual(seen, ['40210'])
 })

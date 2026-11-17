@@ -17,7 +17,14 @@ test('lineCodesFor: com mapeamento usa a tabela (lista ou valor)', () => {
   const table = { 9250: ['1234', ' 0567 '], 5102: '42', 1: [] }
   assert.deepEqual(lineCodesFor('9250', table), ['1234', '567'])
   assert.deepEqual(lineCodesFor('5102', table), ['42'])
-  assert.deepEqual(lineCodesFor('1', table), ['1']) // lista vazia: volta ao número
+  assert.deepEqual(lineCodesFor('1', table), []) // tabela preenchida: sem códigos não casa com nada
+  assert.deepEqual(lineCodesFor('7777', table), []) // linha fora da tabela também não
+})
+
+test('tabela real: códigos inferidos do feed (ex. 6350 -> NL 4023)', () => {
+  assert.deepEqual(lineCodesFor('6350'), ['4023'])
+  assert.deepEqual(lineCodesFor('9250'), ['660'])
+  assert.ok(Object.keys(LINE_CODES).length > 100)
 })
 
 test('matchesLine ignora espaços, caixa e zeros à esquerda', () => {
