@@ -12,7 +12,9 @@
     "vender": "cade-o-bus",
     "description": "Mostra os ônibus de BH (BHTrans) mais próximos do seu ponto favorito."
   },
-  "permissions": ["data:os.device.info"],
+  "permissions": [
+    "data:os.device.info"
+  ],
   "runtime": {
     "apiVersion": {
       "compatible": "4.0",
@@ -24,7 +26,11 @@
     "common": {
       "module": {
         "page": {
-          "pages": ["page/home/index.page", "page/detail/index.page"]
+          "pages": [
+            "page/diag/index.page",
+            "page/home/index.page",
+            "page/detail/index.page"
+          ]
         },
         "app-side": {
           "path": "app-side/index"
