@@ -89,3 +89,93 @@ test('buildFavorite normaliza o rascunho', () => {
     lon: '-43.9'
   })
 })
+
+// ---- Fluxo pela lista do GTFS: linha -> sentido -> ponto ----
+import { validateDraft, draftChoices, selectValue } from '../shared/settings-form.js'
+
+const INDEX = {
+  v: 1,
+  stops: {
+    id: ['10', '20', '30'],
+    name: ['Avenida Afonso Pena 1500', 'Rua da Bahia 100', 'Praça Sete'],
+    lat: [-1992000, -1991900, -1991800],
+    lon: [-4393000, -4393100, -4393200]
+  },
+  lines: [
+    ['9250', 'Caetano Furquim/Nova Cintra', [[0, 'Nova Cintra', [0, 1]], [1, 'São Geraldo', [1, 2]]]],
+    ['SC03A', 'Circular', [[0, 'Volta', [2, 0]]]]
+  ]
+}
+
+test('applyDraftChange: trocar linha limpa sentido e ponto; trocar sentido limpa ponto', () => {
+  const d = { line: '9250', dir: '1', stopId: '20', name: 'X' }
+  assert.deepEqual(applyDraftChange(d, 'line', ' 9250 '), { line: '9250', dir: '1', stopId: '20', name: 'X' })
+  assert.deepEqual(applyDraftChange(d, 'line', '5102'), { line: '5102', name: 'X' })
+  assert.deepEqual(applyDraftChange(d, 'dir', '0'), { line: '9250', dir: '0', name: 'X' })
+  assert.deepEqual(applyDraftChange(d, 'dir', { value: '1' }), d)
+  assert.deepEqual(applyDraftChange(d, 'stopId', { value: 30 }), { ...d, stopId: '30' })
+  assert.deepEqual(applyDraftChange({}, 'manual', true), { manual: true })
+  assert.deepEqual(applyDraftChange({ manual: true }, 'manual', 'sim'), { manual: false })
+  assert.deepEqual(applyDraftChange(null, 'name', 'A'), { name: 'A' })
+})
+
+test('selectValue aceita texto, número ou { value }', () => {
+  assert.equal(selectValue('1'), '1')
+  assert.equal(selectValue(0), '0')
+  assert.equal(selectValue({ value: ' 20 ' }), '20')
+  assert.equal(selectValue(null), '')
+})
+
+test('draftChoices: sugestões, sentidos e pontos da linha', () => {
+  assert.deepEqual(draftChoices({}, INDEX).dirOptions, [])
+  assert.deepEqual(draftChoices({ line: '92' }, INDEX).suggestions.map((l) => l.number), ['9250'])
+  const c = draftChoices({ line: '9250' }, INDEX)
+  assert.deepEqual(c.dirOptions, [
+    { name: 'Sentido Nova Cintra', value: '0' },
+    { name: 'Sentido São Geraldo', value: '1' }
+  ])
+  assert.equal(c.dir, null)
+  const d = draftChoices({ line: '9250', dir: '1', stopId: '30' }, INDEX)
+  assert.deepEqual(d.stopOptions, [
+    { name: '1. Rua da Bahia 100', value: '20' },
+    { name: '2. Praça Sete', value: '30' }
+  ])
+  assert.equal(d.stop.name, 'Praça Sete')
+  // Ponto de outro sentido não vale.
+  assert.equal(draftChoices({ line: '9250', dir: '0', stopId: '30' }, INDEX).stop, null)
+  // Sentido único já vem escolhido.
+  assert.equal(draftChoices({ line: 'sc03a' }, INDEX).dir, 0)
+})
+
+test('validateDraft pela lista', () => {
+  assert.deepEqual(validateDraft({}, INDEX), ['Preencha "Número da linha".'])
+  assert.match(validateDraft({ line: '1' }, INDEX)[0], /Linha 1 não encontrada/)
+  assert.deepEqual(validateDraft({ line: '9250' }, INDEX), ['Escolha o sentido.'])
+  assert.deepEqual(validateDraft({ line: '9250', dir: '0' }, INDEX), ['Escolha o ponto na lista.'])
+  assert.deepEqual(validateDraft({ line: '9250', dir: '0', stopId: '10' }, INDEX), [])
+  assert.match(validateDraft({ line: '9250', dir: '0', stopId: '10', name: 'n'.repeat(31) }, INDEX).join(' '), /no máximo 30/)
+})
+
+test('validateDraft no modo avançado usa a validação manual', () => {
+  assert.deepEqual(validateDraft({ ...ok, manual: true }, INDEX), [])
+  assert.equal(validateDraft({ manual: true }, INDEX).length, 4)
+  assert.match(validateDraft({ ...ok, manual: true, dir: '5' }, INDEX).join(' '), /Sentido inválido/)
+  assert.deepEqual(validateDraft(ok), []) // sem índice: manual
+})
+
+test('buildFavorite pela lista guarda line, dir, stopId, name, lat e lon', () => {
+  assert.deepEqual(buildFavorite({ line: ' 9250', dir: '1', stopId: '30' }, 'id1', INDEX), {
+    id: 'id1',
+    name: 'Praça Sete',
+    line: '9250',
+    dir: 1,
+    stopId: '30',
+    lat: '-19.918',
+    lon: '-43.932'
+  })
+  const longName = buildFavorite({ line: '9250', dir: '0', stopId: '10', name: '  Trabalho ' }, 'id2', INDEX)
+  assert.equal(longName.name, 'Trabalho')
+  assert.deepEqual(buildFavorite({ ...ok, manual: true, dir: '0' }, 'id3', INDEX), {
+    id: 'id3', name: 'Casa', line: '1234', lat: '-19.9191', lon: '-43.9386', dir: 0
+  })
+})
