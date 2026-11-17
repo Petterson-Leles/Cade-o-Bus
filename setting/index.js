@@ -1,10 +1,15 @@
-// Tela de configurações (abre no app Zepp do celular): cadastrar pontos favoritos.
+// Tela de configurações (abre no app Zepp do celular): tema do relógio e pontos favoritos.
 import { readFavorites, writeFavorites, newFavoriteId, removeFavorite } from '../utils/favorites'
-import { CSS } from '../utils/colors'
+import { CSS, readThemeName, writeThemeName } from '../utils/colors'
 import { DRAFT_FIELDS, readJson, validate, applyDraftChange, buildFavorite } from '../shared/settings-form'
 
 const DRAFT_KEY = 'draft'
 const MESSAGE_KEY = 'formMessage'
+
+const THEME_OPTIONS = [
+  { value: 'dark', label: 'Escuro' },
+  { value: 'light', label: 'Claro' }
+]
 
 const buttonStyle = (bg, color) => ({
   fontSize: '15px',
@@ -16,6 +21,29 @@ const buttonStyle = (bg, color) => ({
   marginTop: '8px'
 })
 
+// Escolha de tema em dois botões lado a lado: o escolhido fica azul colonial.
+function themePicker(storage) {
+  const current = readThemeName(storage)
+  return View(
+    { style: { display: 'flex', flexDirection: 'row', marginTop: '4px' } },
+    THEME_OPTIONS.map((opt, i) => {
+      const selected = opt.value === current
+      return Button({
+        label: selected ? `✓ ${opt.label}` : opt.label,
+        style: {
+          ...buttonStyle(selected ? CSS.primary : CSS.card, selected ? CSS.primaryText : CSS.primary),
+          flex: 1,
+          border: `2px solid ${CSS.primary}`,
+          marginLeft: i > 0 ? '8px' : '0'
+        },
+        onClick: () => {
+          if (readThemeName(storage) !== opt.value) writeThemeName(storage, opt.value)
+        }
+      })
+    })
+  )
+}
+
 function messageBox(message) {
   if (!message || !message.text) return null
   const ok = message.type === 'success'
@@ -26,7 +54,7 @@ function messageBox(message) {
         padding: '10px 12px',
         borderRadius: '8px',
         background: ok ? CSS.successBg : CSS.dangerBg,
-        color: ok ? CSS.success : CSS.danger,
+        color: ok ? CSS.success : CSS.dangerText,
         fontSize: '14px'
       }
     },
@@ -111,12 +139,20 @@ AppSettingsPage({
             )
           )
 
-    return View({ style: { padding: '12px 20px' } }, [
-      Text({ bold: true, style: { fontSize: '22px', color: CSS.text, marginBottom: '4px' } }, 'Cadê o Busão'),
+    return View({ style: { padding: '12px 20px', background: CSS.bg, minHeight: '100vh' } }, [
+      Text({ bold: true, style: { fontSize: '22px', color: CSS.title, marginBottom: '4px' } }, 'Cadê o Busão'),
+      View({ style: { width: '48px', height: '3px', background: CSS.accent, borderRadius: '2px', marginBottom: '8px' } }, []),
       Text(
         { paragraph: true, style: { fontSize: '14px', color: CSS.muted } },
-        'Cadastre os pontos de ônibus que você usa. Eles aparecem na tela inicial do relógio.'
+        'Uai, é só cadastrar os pontos de ônibus que você usa. Eles aparecem na tela inicial do relógio.'
       ),
+      Section({ title: 'Tema do relógio', style: { marginTop: '12px' } }, [
+        themePicker(storage),
+        Text(
+          { paragraph: true, style: { fontSize: '12px', color: CSS.muted, marginTop: '6px' } },
+          'Escuro (padrão) gasta menos bateria na tela AMOLED. Vale para todas as telas do relógio.'
+        )
+      ]),
       Section({ title: 'Novo ponto', style: { marginTop: '12px' } }, [
         ...inputs,
         Text(

@@ -39,7 +39,7 @@ export const THEMES = Object.freeze({
     buttonPressed: 0x173b69,
     buttonText: 0xffffff, // 8.3:1
     divider: 0xa0522d, // 4.9:1
-    error: 0xd52b1e // 4.4:1
+    error: 0xb8231a // vermelho de Minas escurecido: 5.6:1 (avisos de 22 px)
   })
 })
 
