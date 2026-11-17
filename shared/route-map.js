@@ -312,6 +312,7 @@ export function sanitizeMapPayload(map, limit = 200) {
   const pieces = (list) => (Array.isArray(list) ? list.map(flat).filter((a) => a && a.length >= 4) : [])
   return {
     r: okNum(map.r) ? Math.round(map.r) : null,
+    speed: typeof map.speed === 'number' && map.speed > 0 && map.speed < 20 ? map.speed : 0,
     route: pieces(map.route),
     hi: pieces(map.hi),
     stops: flat(map.stops) || [],
@@ -319,4 +320,58 @@ export function sanitizeMapPayload(map, limit = 200) {
       ? map.buses.map((b) => (b && okNum(b.x) && okNum(b.y) ? { x: Math.round(b.x), y: Math.round(b.y), clamped: !!b.clamped } : null))
       : []
   }
+}
+
+// ---- Animação do ônibus no relógio (entre as atualizações de 30 s) ----
+
+// Comprimento de uma polyline plana [x0, y0, x1, y1, ...].
+export function pathLength(flat) {
+  let len = 0
+  for (let i = 0; i + 3 < flat.length; i += 2) len += Math.hypot(flat[i + 2] - flat[i], flat[i + 3] - flat[i + 1])
+  return len
+}
+
+// Ponto a distancePx do início da polyline plana, sem passar do fim.
+// Devolve { x, y, along, done } (done = chegou ao fim, isto é, ao ponto do usuário)
+// ou null se a polyline estiver vazia.
+export function advanceAlong(flat, distancePx) {
+  if (!Array.isArray(flat) || flat.length < 2) return null
+  let left = Math.max(0, Number(distancePx) || 0)
+  let along = 0
+  for (let i = 0; i + 3 < flat.length; i += 2) {
+    const x0 = flat[i]
+    const y0 = flat[i + 1]
+    const seg = Math.hypot(flat[i + 2] - x0, flat[i + 3] - y0)
+    if (left <= seg && seg > 0) {
+      const t = left / seg
+      return { x: x0 + t * (flat[i + 2] - x0), y: y0 + t * (flat[i + 3] - y0), along: along + left, done: false }
+    }
+    left -= seg
+    along += seg
+  }
+  return { x: flat[flat.length - 2], y: flat[flat.length - 1], along, done: true }
+}
+
+// Mistura linear entre duas posições { x, y } (k de 0 a 1), para a correção curta.
+export function blend(from, to, k) {
+  const t = Math.max(0, Math.min(1, k))
+  return { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t }
+}
+
+// Velocidade no mapa (pixels de design por segundo) a partir de km/h (15–60).
+export function speedPxPerSec(kmh, pxPerKm = MAP_PX_PER_KM) {
+  const v = Math.min(60, Math.max(15, Number(kmh) || 15))
+  return ((v / 3.6) * pxPerKm) / 1000
+}
+
+// Caminho da animação: do ônibus até o ponto, em pixels (último pedaço do destaque,
+// que termina no ponto). Só vale se o ônibus estiver dentro do mapa (não preso à
+// borda) e o pedaço começar perto dele; senão [].
+export function animationPath(map, maxStartGapPx = 6) {
+  if (!map || !map.hi || map.hi.length === 0 || !map.buses || !map.buses[0]) return []
+  const bus = map.buses[0]
+  if (bus.clamped) return []
+  const piece = map.hi[map.hi.length - 1]
+  if (!piece || piece.length < 4 || Math.hypot(piece[0] - bus.x, piece[1] - bus.y) > maxStartGapPx) return []
+  return piece
 }

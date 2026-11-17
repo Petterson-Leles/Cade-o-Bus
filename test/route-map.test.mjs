@@ -15,6 +15,11 @@ import {
   sanitizeMapPayload,
   segmentBearing,
   angleDiff,
+  pathLength,
+  advanceAlong,
+  blend,
+  speedPxPerSec,
+  animationPath,
   M_PER_DEG,
   MAP_RADIUS_PX
 } from '../shared/route-map.js'
@@ -179,6 +184,7 @@ test('sanitizeMapPayload descarta o que não for inteiro em faixa', () => {
   })
   assert.deepEqual(m, {
     r: 96,
+    speed: 0,
     route: [[0, 0, 10, 10]],
     hi: [],
     stops: [1, 2, 3, 4],
@@ -186,4 +192,35 @@ test('sanitizeMapPayload descarta o que não for inteiro em faixa', () => {
   })
   assert.equal(sanitizeMapPayload(null), null)
   assert.deepEqual(sanitizeMapPayload({ stops: [1] }).stops, [])
+})
+
+test('advanceAlong anda pela polyline sem passar do fim', () => {
+  const path = [0, 0, 10, 0, 10, 10]
+  assert.equal(pathLength(path), 20)
+  assert.deepEqual(advanceAlong(path, 0), { x: 0, y: 0, along: 0, done: false })
+  assert.deepEqual(advanceAlong(path, 4), { x: 4, y: 0, along: 4, done: false })
+  assert.deepEqual(advanceAlong(path, 15), { x: 10, y: 5, along: 15, done: false })
+  assert.deepEqual(advanceAlong(path, 99), { x: 10, y: 10, along: 20, done: true })
+  assert.deepEqual(advanceAlong(path, -3), { x: 0, y: 0, along: 0, done: false })
+  assert.deepEqual(advanceAlong([5, 5], 3), { x: 5, y: 5, along: 0, done: true })
+  assert.equal(advanceAlong([], 3), null)
+  assert.equal(advanceAlong(null, 3), null)
+})
+
+test('blend e speedPxPerSec', () => {
+  assert.deepEqual(blend({ x: 0, y: 0 }, { x: 10, y: -4 }, 0.5), { x: 5, y: -2 })
+  assert.deepEqual(blend({ x: 0, y: 0 }, { x: 10, y: 0 }, 2), { x: 10, y: 0 })
+  // 36 km/h = 10 m/s = 1,28 px/s na escala de 128 px/km; limites 15–60 km/h.
+  assert.ok(Math.abs(speedPxPerSec(36) - 1.28) < 1e-9)
+  assert.equal(speedPxPerSec(0), speedPxPerSec(15))
+  assert.equal(speedPxPerSec(200), speedPxPerSec(60))
+})
+
+test('animationPath: trecho destacado que começa no ônibus', () => {
+  const map = { hi: [[-64, 0, 0, 0]], buses: [{ x: -64, y: 0, clamped: false }] }
+  assert.deepEqual(animationPath(map), [-64, 0, 0, 0])
+  assert.deepEqual(animationPath({ ...map, buses: [{ x: -80, y: 0, clamped: true }] }), [])
+  assert.deepEqual(animationPath({ ...map, buses: [{ x: 30, y: 30, clamped: false }] }), [])
+  assert.deepEqual(animationPath({ hi: [], buses: [] }), [])
+  assert.deepEqual(animationPath(null), [])
 })

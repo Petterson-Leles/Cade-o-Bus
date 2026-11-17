@@ -9,9 +9,17 @@ import { BasePage } from '@zeppos/zml/base-page'
 import { DEVICE_WIDTH, DEVICE_HEIGHT, getTheme, etaColor, etaLabel, busIcon, BUS_ICON_SIZE, ROUTE_HIGHLIGHT } from '../../utils/ui'
 import { parseDetailParams, parseSettingsResult } from '../../utils/favorites'
 import { mapOffset, etaFontSize, infoLine, parseBusesResult } from '../../utils/detail-view'
-import { MAP_PX_PER_KM, MAX_MAP_STOPS, MAP_BUS_MAX_R } from '../../shared/route-map'
+import { MAP_PX_PER_KM, MAX_MAP_STOPS, MAP_BUS_MAX_R, animationPath, advanceAlong, blend } from '../../shared/route-map'
 
 const REFRESH_MS = 30 * 1000
+// Animação do ícone do ônibus ao longo do trajeto: um passo por segundo (bateria).
+const ANIM_MS = 1000
+// Para sozinha depois disso sem posição nova (consulta atrasada ou sem resposta).
+const ANIM_MAX_MS = 45 * 1000
+// Diferença até isso (px de design) entre o ícone e a posição nova: correção suave
+// em ANIM_FIX_STEPS passos; acima, pula direto.
+const ANIM_FIX_MAX_PX = 30
+const ANIM_FIX_STEPS = 2
 const DOTS_MS = 500
 const MAX_OTHERS = 2
 // Posição do GPS mais velha que isso ganha aviso.
@@ -67,6 +75,8 @@ Page(
         theme,
         timer: null,
         dotsTimer: null,
+        anim: null, // { timer, path, speed, startedAt, src, fixFrom, fixStep, target }
+        busPos: null, // posição atual do ícone (px de design, relativa ao centro)
         hasData: false,
         loading: false,
         destroyed: false,
@@ -249,6 +259,8 @@ Page(
       const view = this.state.view
       const footer = this.state.footerText
       this.stopDots()
+      this.stopAnim()
+      this.state.busPos = null
       this.state.all.forEach((x) => hmUI.deleteWidget(x))
       this.state.all = []
       this.createWidgets()
@@ -269,6 +281,56 @@ Page(
         w.mapRing, w.mapInner, w.mapCrossH, w.mapCrossV, w.stopOuter, w.stopInner,
         ...w.lineStops, ...w.otherDots, w.busDot
       ]
+    },
+
+    // Ícone do ônibus na posição { x, y } (px de design, relativa ao centro do mapa).
+    moveBus(pos, src) {
+      this.state.busPos = { x: pos.x, y: pos.y }
+      this.state.w.busDot.setProperty(hmUI.prop.MORE, {
+        x: px(Math.round(MAP_CX + pos.x - BUS_HALF)),
+        y: px(Math.round(MAP_CY + pos.y - BUS_HALF)),
+        w: px(BUS_ICON_SIZE),
+        h: px(BUS_ICON_SIZE),
+        src
+      })
+    },
+
+    // Desliza o ícone pela polyline (do ônibus ao ponto) a speed px/s.
+    // fixFrom: posição antiga do ícone, para uma correção curta até o caminho novo;
+    // target: posição real nova (usada quando não há caminho para andar).
+    startAnim(path, speed, src, fixFrom, target) {
+      this.stopAnim()
+      if (this.state.destroyed) return
+      const moving = path.length >= 4 && speed > 0
+      if (!moving && !fixFrom) return
+      const anim = { timer: null, path, speed: moving ? speed : 0, startedAt: Date.now(), src, fixFrom, fixStep: 0, target }
+      this.state.anim = anim
+      anim.timer = setInterval(() => this.animStep(anim), ANIM_MS)
+    },
+
+    animStep(anim) {
+      if (this.state.destroyed || this.state.anim !== anim) return
+      const elapsed = Date.now() - anim.startedAt
+      if (elapsed > ANIM_MAX_MS) {
+        this.stopAnim()
+        return
+      }
+      let pos = advanceAlong(anim.path, (anim.speed * elapsed) / 1000)
+      const done = !pos || pos.done
+      if (!pos) pos = anim.target
+      if (anim.fixFrom && anim.fixStep < ANIM_FIX_STEPS) {
+        anim.fixStep++
+        pos = blend(anim.fixFrom, pos, anim.fixStep / ANIM_FIX_STEPS)
+      }
+      this.moveBus(pos, anim.src)
+      // Chegou ao ponto do usuário e a correção acabou: para até a próxima posição.
+      if (done && !(anim.fixFrom && anim.fixStep < ANIM_FIX_STEPS)) this.stopAnim()
+    },
+
+    stopAnim() {
+      const anim = this.state.anim
+      if (anim && anim.timer) clearInterval(anim.timer)
+      this.state.anim = null
     },
 
     clearMap() {
@@ -335,6 +397,8 @@ Page(
       this.stopDots()
       this.state.hasData = false
       this.setVisible(this.dataWidgets(), false)
+      this.stopAnim()
+      this.state.busPos = null
       this.clearMap()
       this.setVisible([w.statusTitle, w.statusDetail], true)
       w.statusTitle.setProperty(hmUI.prop.TEXT, title)
@@ -435,16 +499,19 @@ Page(
         else dot.setProperty(hmUI.prop.VISIBLE, false)
       })
       // Primeiro ônibus: ícone da faixa de tempo, centrado na posição (x-24, y-24).
+      // Com trajeto, desliza até o ponto entre as atualizações (startAnim).
       const o = offset(first, 0)
+      const src = busIcon(first.etaMin, this.state.theme)
+      const prev = this.state.busPos
+      this.stopAnim()
       w.busDot.setProperty(hmUI.prop.VISIBLE, !!o)
       if (o) {
-        w.busDot.setProperty(hmUI.prop.MORE, {
-          x: px(MAP_CX + o.dx - BUS_HALF),
-          y: px(MAP_CY + o.dy - BUS_HALF),
-          w: px(BUS_ICON_SIZE),
-          h: px(BUS_ICON_SIZE),
-          src: busIcon(first.etaMin, this.state.theme)
-        })
+        const target = { x: o.dx, y: o.dy }
+        const close = prev && Math.hypot(prev.x - target.x, prev.y - target.y) <= ANIM_FIX_MAX_PX
+        this.moveBus(close ? prev : target, src)
+        this.startAnim(animationPath(map), map ? map.speed : 0, src, close ? prev : null, target)
+      } else {
+        this.state.busPos = null
       }
 
       this.setFooter(`Atualizado ${clock()}`)
@@ -455,6 +522,7 @@ Page(
       if (this.state.timer) clearTimeout(this.state.timer)
       this.state.timer = null
       this.stopDots()
+      this.stopAnim()
     }
   })
 )

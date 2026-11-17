@@ -13,7 +13,7 @@ import { settingsPayload, FAVORITES_KEY } from '../utils/favorites'
 import { THEME_KEY } from '../utils/colors'
 import { lineCodesFor } from '../shared/line-codes'
 import { lineShape, lineStops } from '../shared/gtfs'
-import { routeContext, busOnRoute, buildMapPayload, MAP_BUS_MAX_R } from '../shared/route-map'
+import { routeContext, busOnRoute, buildMapPayload, speedPxPerSec, MAP_BUS_MAX_R } from '../shared/route-map'
 // Pacote gerado por scripts/build-gtfs.mjs (GTFS oficial de BH, SUMOB/PBH).
 import GTFS_INDEX from '../data/gtfs-index'
 import GTFS_SHAPES from '../data/gtfs-shapes'
@@ -67,6 +67,8 @@ AppSideService(
         lineStops: route ? route.stops : [],
         busMaxR: MAP_BUS_MAX_R
       })
+      // Para o relógio animar o ícone entre as atualizações (pixels de design por segundo).
+      map.speed = buses[0] ? Math.round(speedPxPerSec(buses[0].speedKmh) * 100) / 100 : 0
       return { buses, map }
     },
 

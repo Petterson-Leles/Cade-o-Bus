@@ -167,7 +167,9 @@ export function nearestBuses(rows, { line, codes, lat, lon, now = Date.now(), li
         lon: bLon,
         distanceM: Math.round(distance),
         etaMin: Math.max(1, Math.round(distance / 1000 / kmh * 60)),
-        ageSec
+        ageSec,
+        // Velocidade usada na estimativa (VL limitada a 15–60 km/h).
+        speedKmh: kmh
       }
       // Distância medida pela rua (ao longo do trajeto), não em linha reta.
       if (alongRoute) bus.alongRoute = true
