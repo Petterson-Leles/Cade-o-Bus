@@ -5,6 +5,7 @@
   "private": true,
   "main": "app.js",
   "scripts": {
+    "build:data": "node scripts/build-gtfs.mjs",
     "build": "zeus build",
     "dev": "zeus dev",
     "preview": "zeus preview",
