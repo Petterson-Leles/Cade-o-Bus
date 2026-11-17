@@ -1,5 +1,6 @@
 // Favoritos = pontos de ônibus que você cadastra nas configurações do app
-// (no app Zepp do celular). Cada um: { id, name, line, lat, lon }.
+// (no app Zepp do celular). Cada um: { id, name, line, lat, lon } e, quando o
+// ponto foi escolhido na lista do GTFS, também dir (sentido 0/1) e stopId.
 // Sem APIs do Zepp OS: roda no relógio, no celular e nos testes do Node.
 import { normalizeThemeName, readThemeName } from './colors.js'
 
@@ -17,6 +18,20 @@ function cleanCoord(value) {
   return Number.isFinite(n) ? String(n) : null
 }
 
+// Sentido do GTFS (direction_id): só 0 ou 1.
+function cleanDir(value) {
+  if (value === '' || value === null || value === undefined || typeof value === 'boolean') return null
+  const n = Number(value)
+  return n === 0 || n === 1 ? n : null
+}
+
+// stop_id do GTFS: letras, números, "_" e "-" (até 30).
+function cleanStopId(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return ''
+  const v = String(value).trim()
+  return /^[A-Za-z0-9_-]{1,30}$/.test(v) ? v : ''
+}
+
 // Mantém só itens utilizáveis e corta nome e linha em MAX_TEXT_LEN caracteres.
 export function sanitizeFavorites(list) {
   if (!Array.isArray(list)) return []
@@ -30,6 +45,10 @@ export function sanitizeFavorites(list) {
     if (!name || !line || lat === null || lon === null) return
     const fav = { name, line, lat, lon }
     if (typeof item.id === 'string' && item.id) fav.id = item.id
+    const dir = cleanDir(item.dir)
+    if (dir !== null) fav.dir = dir
+    const stopId = cleanStopId(item.stopId)
+    if (stopId) fav.stopId = stopId
     out.push(fav)
   })
   return out
@@ -53,7 +72,8 @@ export function newFavoriteId(now = Date.now(), random = Math.random) {
 }
 
 function sameContent(a, b) {
-  return a.name === b.name && a.line === b.line && a.lat === b.lat && a.lon === b.lon
+  return a.name === b.name && a.line === b.line && a.lat === b.lat && a.lon === b.lon &&
+    a.dir === b.dir && a.stopId === b.stopId
 }
 
 // Remove um favorito: pelo id ou, nos antigos sem id, pelo conteúdo (só o primeiro igual).

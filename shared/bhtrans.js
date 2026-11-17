@@ -1,5 +1,6 @@
 // Lógica pura (sem APIs do Zepp OS) para ler o feed de tempo real da BHTrans.
 // Fica separada para poder ser testada com `npm test` no Node.
+import { lineCodesFor, matchesLine } from './line-codes.js'
 
 // Feed público de posições GPS dos ônibus de BH (dados abertos da PBH).
 export const BHTRANS_REALTIME_URL = 'https://temporeal.pbh.gov.br/?param=C'
@@ -11,6 +12,7 @@ export const COLUMNS = {
   lat: 'LT',
   lon: 'LG',
   speed: 'VL', // km/h
+  heading: 'DG', // direção em graus (0 = norte), se o feed trouxer
   time: 'HR' // AAAAMMDDhhmmss
 }
 
@@ -98,7 +100,13 @@ export function parseBusParams(params) {
   const lat = toNumber(params.lat)
   const lon = toNumber(params.lon)
   if (!line || !Number.isFinite(lat) || !Number.isFinite(lon)) return null
-  return { line, lat, lon }
+  const out = { line, lat, lon }
+  // Opcionais (ponto escolhido na lista do GTFS): sentido (0/1) e id do ponto.
+  const dir = params.dir === '' || params.dir === null || params.dir === undefined ? NaN : Number(params.dir)
+  if (dir === 0 || dir === 1) out.dir = dir
+  const stopId = typeof params.stopId === 'string' || typeof params.stopId === 'number' ? String(params.stopId).trim() : ''
+  if (/^[A-Za-z0-9_-]{1,30}$/.test(stopId)) out.stopId = stopId
+  return out
 }
 
 // AAAAMMDDhhmmss no horário de Brasília -> milissegundos UTC (não depende do fuso do aparelho).
@@ -122,24 +130,37 @@ export function distanceMeters(lat1, lon1, lat2, lon2) {
 
 // Devolve os `limit` ônibus da linha que chegam primeiro ao ponto (lat, lon).
 // Posições com mais de `maxAgeSec` segundos são descartadas.
-export function nearestBuses(rows, { line, lat, lon, now = Date.now(), limit = 3, maxAgeSec = MAX_AGE_SEC }) {
-  const wanted = String(line).trim()
+// - codes: códigos NL aceitos (padrão: lineCodesFor(line), ver shared/line-codes.js).
+// - routeDistance(lat, lon, { speed, heading }): opcional; devolve { toStopM, passed } medido ao longo
+//   do trajeto, ou null (ônibus fora da rota: fica a linha reta). Ônibus que já
+//   passou do ponto (passed) sai da lista.
+export function nearestBuses(rows, { line, codes, lat, lon, now = Date.now(), limit = 3, maxAgeSec = MAX_AGE_SEC, routeDistance = null }) {
+  const wanted = Array.isArray(codes) && codes.length > 0 ? codes : lineCodesFor(line)
   const stopLat = toNumber(lat)
   const stopLon = toNumber(lon)
   if (!Number.isFinite(stopLat) || !Number.isFinite(stopLon)) return []
   return rows
-    .filter((r) => String(r[COLUMNS.line]).trim() === wanted)
+    .filter((r) => matchesLine(r[COLUMNS.line], wanted))
     .map((r) => {
       const bLat = toNumber(r[COLUMNS.lat])
       const bLon = toNumber(r[COLUMNS.lon])
       if (!Number.isFinite(bLat) || !Number.isFinite(bLon)) return null
-      const distance = distanceMeters(stopLat, stopLon, bLat, bLon)
-      const speed = toNumber(r[COLUMNS.speed])
-      const kmh = Number.isFinite(speed) ? Math.min(MAX_SPEED_KMH, Math.max(MIN_SPEED_KMH, speed)) : MIN_SPEED_KMH
       const ts = parseTimestamp(r[COLUMNS.time])
       const ageSec = ts ? Math.max(0, Math.round((now - ts) / 1000)) : null
       if (ageSec !== null && ageSec > maxAgeSec) return null
-      return {
+      let distance = distanceMeters(stopLat, stopLon, bLat, bLon)
+      let alongRoute = false
+      if (typeof routeDistance === 'function') {
+        const onRoute = routeDistance(bLat, bLon, { speed: toNumber(r[COLUMNS.speed]), heading: toNumber(r[COLUMNS.heading]) })
+        if (onRoute && onRoute.passed) return null
+        if (onRoute && Number.isFinite(onRoute.toStopM)) {
+          distance = onRoute.toStopM
+          alongRoute = true
+        }
+      }
+      const speed = toNumber(r[COLUMNS.speed])
+      const kmh = Number.isFinite(speed) ? Math.min(MAX_SPEED_KMH, Math.max(MIN_SPEED_KMH, speed)) : MIN_SPEED_KMH
+      const bus = {
         vehicle: r[COLUMNS.vehicle] || '?',
         // Posição do ônibus (graus), para o mini mapa do relógio.
         lat: bLat,
@@ -148,6 +169,9 @@ export function nearestBuses(rows, { line, lat, lon, now = Date.now(), limit = 3
         etaMin: Math.max(1, Math.round(distance / 1000 / kmh * 60)),
         ageSec
       }
+      // Distância medida pela rua (ao longo do trajeto), não em linha reta.
+      if (alongRoute) bus.alongRoute = true
+      return bus
     })
     .filter(Boolean)
     .sort((a, b) => a.etaMin - b.etaMin || a.distanceM - b.distanceM)

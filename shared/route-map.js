@@ -14,6 +14,10 @@ export const MAP_RADIUS_PX = Math.round((MAP_RADIUS_M / 1000) * MAP_PX_PER_KM)
 export const MAX_OFF_ROUTE_M = 150
 // Tolerância para considerar que o ônibus "já passou" do ponto (GPS impreciso).
 export const PASSED_TOLERANCE_M = 40
+// Com velocidade a partir disso o rumo do GPS (DG) é confiável para saber o sentido.
+export const MIN_HEADING_SPEED_KMH = 5
+// Diferença máxima entre o rumo do ônibus e o do trajeto para contar como mesmo sentido.
+export const MAX_HEADING_DIFF_DEG = 90
 // Trajeto cujo início e fim ficam a menos disso é circular.
 export const LOOP_GAP_M = 300
 // No máximo tantos pontos de ônibus no mapa (cada um vira um CIRCLE no relógio).
@@ -48,6 +52,18 @@ function projectOnSegment(p, a, b) {
   const x = a[0] + t * dx
   const y = a[1] + t * dy
   return { t, x, y, dist: Math.hypot(p[0] - x, p[1] - y) }
+}
+
+// Rumo (graus, 0 = norte, sentido horário) do segmento i, em coordenadas da tela.
+export function segmentBearing(pts, i) {
+  const dx = pts[i + 1][0] - pts[i][0]
+  const dy = pts[i + 1][1] - pts[i][1]
+  return ((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360
+}
+
+export function angleDiff(a, b) {
+  const d = Math.abs((((a - b) % 360) + 360) % 360)
+  return d > 180 ? 360 - d : d
 }
 
 // Projeção de p em cada segmento: [{ seg, along, dist, x, y }], do mais perto ao mais longe.
@@ -109,6 +125,9 @@ export function routeContext(shape, stop) {
 // da rota (mais de maxOffM do trajeto) ou não houver trajeto.
 // Quando a rota passa duas vezes pela mesma rua, entre as projeções próximas
 // fica a que ainda chega ao ponto pelo menor caminho.
+// Se bus.heading (graus) vier e bus.speed >= MIN_HEADING_SPEED_KMH, só valem os
+// trechos no mesmo rumo; nenhum no mesmo rumo = ônibus no sentido contrário
+// (devolve wrongWay e passed = true, para sair da lista).
 export function busOnRoute(ctx, bus, { maxOffM = MAX_OFF_ROUTE_M, tolM = PASSED_TOLERANCE_M } = {}) {
   if (!ctx || !ctx.pts || ctx.pts.length < 2 || ctx.stopAlong === null || !bus) return null
   const lat = toNum(bus.lat)
@@ -118,7 +137,13 @@ export function busOnRoute(ctx, bus, { maxOffM = MAX_OFF_ROUTE_M, tolM = PASSED_
   const all = projections(ctx.pts, ctx.cum, p)
   const best = all[0]
   if (!best || best.dist > maxOffM) return null
-  const near = all.filter((q) => q.dist <= Math.min(maxOffM, best.dist + 25))
+  let near = all.filter((q) => q.dist <= Math.min(maxOffM, best.dist + 25))
+  const heading = toNum(bus.heading)
+  const speed = toNum(bus.speed)
+  if (Number.isFinite(heading) && Number.isFinite(speed) && speed >= MIN_HEADING_SPEED_KMH) {
+    near = near.filter((q) => angleDiff(segmentBearing(ctx.pts, q.seg), heading) <= MAX_HEADING_DIFF_DEG)
+    if (near.length === 0) return { along: best.along, offM: best.dist, toStopM: null, passed: true, wrongWay: true }
+  }
   const ahead = (q) => {
     const d = ctx.stopAlong - q.along
     if (d >= -tolM) return Math.max(0, d)
