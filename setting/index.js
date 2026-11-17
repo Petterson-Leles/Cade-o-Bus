@@ -2,50 +2,101 @@
 // A lista de linhas e pontos vem do pacote GTFS embutido (data/gtfs-index.js):
 // a tela de configurações é um bundle JS comum (ES6, sem eval), então importa
 // o pacote direto, sem depender do side service estar rodando.
+//
+// Tudo o que a tela guarda fica no settingsStorage (rascunho, mensagem, último
+// removido); o side service só avisa o relógio quando mudam "favorites" ou "theme".
 import { readFavorites, writeFavorites, newFavoriteId, removeFavorite } from '../utils/favorites'
 import { CSS, readThemeName, writeThemeName } from '../utils/colors'
 import {
   DRAFT_FIELDS,
+  NAME_SHORTCUTS,
   readJson,
   validateDraft,
   applyDraftChange,
   buildFavorite,
-  draftChoices
+  draftChoices,
+  filterStops,
+  favoriteStreet,
+  removalRecord,
+  undoRemoval
 } from '../shared/settings-form'
-import { findLine, lineStops } from '../shared/gtfs'
 import GTFS_INDEX from '../data/gtfs-index'
 
 const DRAFT_KEY = 'draft'
 const MESSAGE_KEY = 'formMessage'
+const LAST_REMOVED_KEY = 'lastRemoved'
 
 const THEME_OPTIONS = [
   { value: 'dark', label: 'Escuro' },
   { value: 'light', label: 'Claro' }
 ]
 
+const px = (n) => `${n}px`
+
 const buttonStyle = (bg, color) => ({
   fontSize: '15px',
   fontWeight: 'bold',
-  borderRadius: '30px',
+  borderRadius: '22px',
   background: bg,
   color,
   padding: '10px 18px',
   marginTop: '8px'
 })
 
-// Escolha de tema em dois botões lado a lado: o escolhido fica verde-azulado.
+const label = (text) => Text({ style: { fontSize: '12px', color: CSS.muted, marginTop: '10px', marginBottom: '4px' } }, text)
+const hint = (text) => Text({ paragraph: true, style: { fontSize: '12px', color: CSS.muted, marginTop: '6px' } }, text)
+const sectionTitle = (text) => Text({ bold: true, style: { fontSize: '15px', color: CSS.text, marginTop: '16px' } }, text)
+
+// Selo da linha: pílula verde-azulada com o número em branco.
+function chip(number, minWidth = 52) {
+  return View(
+    {
+      style: {
+        flexShrink: 0,
+        minWidth: px(minWidth),
+        textAlign: 'center',
+        background: CSS.chip,
+        borderRadius: '12px',
+        padding: '4px 8px',
+        marginRight: '10px'
+      }
+    },
+    [Text({ bold: true, align: 'center', style: { color: CSS.white, fontSize: '13px' } }, String(number))]
+  )
+}
+
+const card = (extra, children, onClick) =>
+  View(
+    {
+      style: {
+        display: 'flex',
+        flexDirection: 'row',
+        alignItems: 'center',
+        background: CSS.white,
+        border: `1px solid ${CSS.border}`,
+        borderRadius: '14px',
+        padding: '10px 12px',
+        marginTop: '8px',
+        ...extra
+      },
+      onClick
+    },
+    children
+  )
+
+// Escolha de tema em dois botões lado a lado: o escolhido fica preenchido.
 function themePicker(storage) {
   const current = readThemeName(storage)
   return View(
-    { style: { display: 'flex', flexDirection: 'row', marginTop: '4px' } },
+    { style: { display: 'flex', flexDirection: 'row', marginTop: '6px' } },
     THEME_OPTIONS.map((opt, i) => {
       const selected = opt.value === current
       return Button({
-        label: selected ? `✓ ${opt.label}` : opt.label,
+        label: opt.label,
         style: {
-          ...buttonStyle(selected ? CSS.primary : CSS.card, selected ? CSS.primaryText : CSS.primary),
+          ...buttonStyle(selected ? CSS.primary : 'transparent', selected ? CSS.primaryText : CSS.primary),
           flex: 1,
-          border: `2px solid ${CSS.primary}`,
+          border: `1px solid ${CSS.primary}`,
           marginLeft: i > 0 ? '8px' : '0'
         },
         onClick: () => {
@@ -56,34 +107,73 @@ function themePicker(storage) {
   )
 }
 
-const hint = (text) => Text({ paragraph: true, style: { fontSize: '12px', color: CSS.muted, marginTop: '6px' } }, text)
-
-// "Linha 9250 · sentido Nova Cintra" para a lista de salvos.
-function favoriteSubtitle(fav) {
-  const line = findLine(GTFS_INDEX, fav.line)
-  const dir = line && fav.dir !== undefined ? line.dirs.find((d) => d.dir === fav.dir) : null
-  if (dir && fav.stopId) {
-    const stop = lineStops(GTFS_INDEX, fav.line, fav.dir).find((st) => st.id === fav.stopId)
-    return `Linha ${fav.line} → ${dir.headsign}${stop ? ` · ${stop.name}` : ''}`
-  }
-  return `Linha ${fav.line}${dir ? ` → ${dir.headsign}` : ''} · ${fav.lat}, ${fav.lon}`
-}
-
-function messageBox(message) {
+function messageBox(message, onUndo) {
   if (!message || !message.text) return null
-  const ok = message.type === 'success'
+  const ok = message.type !== 'error'
   return View(
     {
       style: {
+        display: 'flex',
+        flexDirection: 'row',
+        alignItems: 'center',
         marginTop: '12px',
-        padding: '10px 12px',
+        padding: '8px 10px',
         borderRadius: '8px',
-        background: ok ? CSS.successBg : CSS.dangerBg,
-        color: ok ? CSS.success : CSS.dangerText,
-        fontSize: '14px'
+        background: ok ? CSS.successBg : CSS.dangerBg
       }
     },
-    message.text.split('\n').map((line) => Text({}, line))
+    [
+      View(
+        { style: { flex: 1 } },
+        message.text.split('\n').map((line) => Text({ style: { fontSize: '13px', color: ok ? CSS.success : CSS.dangerText } }, line))
+      ),
+      message.undo
+        ? Button({
+            label: 'Desfazer',
+            style: { fontSize: '13px', fontWeight: 'bold', color: CSS.primary, background: 'transparent', textDecoration: 'underline', padding: '4px 6px' },
+            onClick: onUndo
+          })
+        : null
+    ].filter(Boolean)
+  )
+}
+
+// Linha da lista de pontos com cara de trajeto: trilho vertical, bolinha e "nº".
+function stopRow(st, { first, last, selected, onClick }) {
+  const seg = (show) => View({ style: { width: '3px', flex: 1, background: show ? CSS.railLine : 'transparent' } }, [])
+  const dot = View(
+    {
+      style: {
+        width: selected ? '17px' : '13px',
+        height: selected ? '17px' : '13px',
+        boxSizing: 'border-box',
+        borderRadius: '50%',
+        background: selected ? CSS.primary : CSS.white,
+        border: selected ? `3px solid ${CSS.white}` : `3px solid ${CSS.primary}`,
+        boxShadow: selected ? `0 0 0 2px ${CSS.primary}` : 'none'
+      }
+    },
+    []
+  )
+  return View(
+    {
+      style: {
+        display: 'flex',
+        flexDirection: 'row',
+        alignItems: 'stretch',
+        minHeight: '40px',
+        padding: '0 12px 0 8px',
+        background: selected ? CSS.chosenBg : 'transparent'
+      },
+      onClick
+    },
+    [
+      View({ style: { width: '28px', display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 } }, [seg(!first), dot, seg(!last)]),
+      View({ style: { flex: 1, display: 'flex', alignItems: 'center', paddingLeft: '6px' } }, [
+        Text({ bold: selected, style: { fontSize: '13px', color: CSS.text } }, st.street)
+      ]),
+      View({ style: { display: 'flex', alignItems: 'center' } }, [Text({ style: { fontSize: '11px', color: '#9AA0A6' } }, `${st.seq}º`)])
+    ]
   )
 }
 
@@ -94,7 +184,7 @@ AppSettingsPage({
     const draft = readJson(storage, DRAFT_KEY, {})
     const message = readJson(storage, MESSAGE_KEY, null)
 
-    const setMessage = (type, text) => storage.setItem(MESSAGE_KEY, JSON.stringify({ type, text }))
+    const setMessage = (type, text, undo) => storage.setItem(MESSAGE_KEY, JSON.stringify({ type, text, undo: !!undo }))
 
     // Relê o rascunho na hora: as variáveis do build podem estar velhas.
     const change = (key, val) => {
@@ -103,35 +193,137 @@ AppSettingsPage({
       // Ao editar, some a mensagem antiga.
       if (storage.getItem(MESSAGE_KEY)) storage.removeItem(MESSAGE_KEY)
     }
-    const input = (key, label, placeholder) =>
+    // O TextInput do Zepp abre uma caixa de edição: onChange chega ao confirmar.
+    const input = (key, title, placeholder) =>
       TextInput({
-        label,
+        label: title,
         placeholder,
         value: draft[key] || '',
-        labelStyle: { fontSize: '14px', color: CSS.text },
-        subStyle: { fontSize: '16px', color: CSS.text },
+        labelStyle: { fontSize: '13px', color: CSS.muted },
+        subStyle: { fontSize: '16px', color: CSS.text, background: CSS.white, border: `1px solid ${CSS.border}`, borderRadius: '10px', padding: '8px 10px' },
         onChange: (val) => change(key, val)
       })
-    const select = (key, label, options, value) =>
-      Select({ label, title: label, options, value, onChange: (val) => change(key, val) })
 
-    // Modo lista: linha -> sentido -> ponto.
     const choices = draftChoices(draft, GTFS_INDEX)
     const pick = []
-    pick.push(input('line', 'Número da linha', 'Ex.: 9250'))
-    if (draft.line && !choices.line) {
-      const sug = choices.suggestions.map((l) => l.number).join(', ')
-      pick.push(hint(sug ? `Não achei essa linha. Você quis dizer: ${sug}?` : 'Não achei essa linha na lista de BH.'))
-    }
+
+    // 1. Linha: número digitado; sugestões pelo começo; cartão da linha encontrada.
+    pick.push(input('line', 'Número da linha', 'Digite o número, ex.: 9250'))
     if (choices.line) {
-      pick.push(Text({ paragraph: true, style: { fontSize: '14px', color: CSS.text, marginTop: '6px' } }, `${choices.line.number} · ${choices.line.name}`))
-      pick.push(select('dir', 'Sentido', choices.dirOptions, choices.dir === null ? '' : String(choices.dir)))
+      pick.push(
+        card({ background: CSS.chosenBg, border: 'none', color: CSS.chosenText }, [
+          chip(choices.line.number),
+          Text({ bold: true, style: { fontSize: '13px', color: CSS.chosenText, flex: 1 } }, choices.line.name)
+        ])
+      )
+    } else if (choices.suggestions.length > 0) {
+      pick.push(hint('Qual dessas?'))
+      choices.suggestions.forEach((l) => {
+        pick.push(card({ padding: '8px 10px' }, [chip(l.number), Text({ style: { fontSize: '13px', color: CSS.text, flex: 1 } }, l.name)], () => change('line', l.number)))
+      })
+    } else if (choices.missing) {
+      pick.push(
+        card({ background: CSS.dangerBg, border: 'none' }, [
+          Text({ style: { fontSize: '13px', color: CSS.dangerText } }, 'Uai, não achei essa linha em BH. Confira o número no letreiro do ônibus.')
+        ])
+      )
     }
+
+    // 2. Sentido: dois cartões "Para <destino>".
+    if (choices.line) {
+      pick.push(label('Sentido'))
+      choices.dirCards.forEach((d) => {
+        const selected = d.dir === choices.dir
+        pick.push(
+          card(
+            { border: `1.5px solid ${selected ? CSS.primary : CSS.border}`, background: selected ? CSS.chosenBg : CSS.white },
+            [
+              View(
+                {
+                  style: {
+                    width: '30px',
+                    height: '30px',
+                    flexShrink: 0,
+                    borderRadius: '50%',
+                    background: selected ? CSS.primary : CSS.chipSoft,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    marginRight: '10px'
+                  }
+                },
+                [Text({ bold: true, style: { color: selected ? CSS.white : CSS.primary, fontSize: '15px' } }, '→')]
+              ),
+              View({ style: { flex: 1 } }, [
+                Text({ bold: true, style: { fontSize: '14px', color: CSS.text } }, d.title),
+                Text({ style: { fontSize: '12px', color: CSS.muted } }, d.detail)
+              ])
+            ],
+            () => change('dir', String(d.dir))
+          )
+        )
+      })
+    }
+
+    // 3. Seu ponto: busca pela rua e a lista na ordem do trajeto.
     if (choices.dir !== null && !draft.manual) {
-      pick.push(select('stopId', 'Ponto', choices.stopOptions, choices.stop ? choices.stop.id : ''))
-      if (choices.stop) pick.push(hint(`Ponto ${choices.stop.id}: ${choices.stop.lat.toFixed(5)}, ${choices.stop.lon.toFixed(5)}`))
+      pick.push(label('Seu ponto'))
+      pick.push(input('q', 'Buscar rua do ponto', 'Ex.: Afonso Pena'))
+      const list = filterStops(choices.stops, draft.q)
+      pick.push(
+        View(
+          {
+            style: {
+              background: CSS.white,
+              border: `1px solid ${CSS.border}`,
+              borderRadius: '14px',
+              padding: '6px 0',
+              marginTop: '8px',
+              maxHeight: '300px',
+              overflowY: 'auto'
+            }
+          },
+          list.length > 0
+            ? list.map((st, i) =>
+                stopRow(st, {
+                  first: i === 0,
+                  last: i === list.length - 1,
+                  selected: !!choices.stop && choices.stop.id === st.id,
+                  onClick: () => change('stopId', st.id)
+                })
+              )
+            : [Text({ paragraph: true, style: { fontSize: '13px', color: CSS.muted, padding: '10px 12px' } }, 'Nenhum ponto com esse nome nesta linha.')]
+        )
+      )
     }
-    pick.push(input('name', 'Nome do ponto (opcional)', choices.stop ? `Ex.: ${choices.stop.name}` : 'Ex.: Casa'))
+
+    // 4. Nome (opcional), só depois de escolher o ponto (no avançado é obrigatório).
+    if (choices.stop || draft.manual) {
+      const example = choices.stop ? `Ex.: Casa (${choices.stop.street || choices.stop.name})` : 'Ex.: Casa'
+      pick.push(label(draft.manual ? 'Nome do ponto' : 'Como você chama esse ponto? (opcional)'))
+      pick.push(input('name', 'Nome', example))
+      pick.push(
+        View(
+          { style: { display: 'flex', flexDirection: 'row', flexWrap: 'wrap' } },
+          NAME_SHORTCUTS.map((s) =>
+            Button({
+              label: s.label,
+              style: {
+                fontSize: '13px',
+                color: CSS.text,
+                background: draft.name === s.value ? CSS.chosenBg : CSS.white,
+                border: `1px solid ${draft.name === s.value ? CSS.primary : CSS.border}`,
+                borderRadius: '16px',
+                padding: '5px 10px',
+                marginTop: '6px',
+                marginRight: '6px'
+              },
+              onClick: () => change('name', s.value)
+            })
+          )
+        )
+      )
+    }
 
     // Avançado: latitude e longitude digitadas (vale também para linhas fora da lista).
     const manual = [
@@ -142,9 +334,10 @@ AppSettingsPage({
       manual.push(hint('Dica: no Google Maps, toque e segure no ponto para copiar a latitude e a longitude. No modo avançado o nome é obrigatório e a linha pode ser qualquer código.'))
     }
 
+    const ready = draft.manual || !!choices.stop
     const addButton = Button({
       label: 'Adicionar ponto',
-      style: buttonStyle(CSS.primary, CSS.primaryText),
+      style: { ...buttonStyle(CSS.primary, CSS.primaryText), width: '100%', marginTop: '14px', opacity: ready ? 1 : 0.45 },
       onClick: () => {
         const current = readJson(storage, DRAFT_KEY, {})
         const errors = validateDraft(current, GTFS_INDEX)
@@ -154,88 +347,67 @@ AppSettingsPage({
         }
         const fav = buildFavorite(current, newFavoriteId(), GTFS_INDEX)
         writeFavorites(storage, [...readFavorites(storage), fav])
-        storage.setItem(DRAFT_KEY, '{}')
-        setMessage('success', `Ponto "${fav.name}" salvo. Ele já aparece no relógio.`)
+        // Mantém a linha (como no protótipo) para cadastrar outro ponto dela.
+        const keep = !current.manual && current.line ? { line: current.line } : {}
+        storage.setItem(DRAFT_KEY, JSON.stringify(keep))
+        setMessage('success', `✓ “${fav.name}” salvo. Já aparece no relógio.`)
       }
     })
 
+    const undo = () => {
+      const record = readJson(storage, LAST_REMOVED_KEY, null)
+      if (record) writeFavorites(storage, undoRemoval(readFavorites(storage), record))
+      storage.removeItem(LAST_REMOVED_KEY)
+      storage.removeItem(MESSAGE_KEY)
+    }
+
     const list =
       favorites.length === 0
-        ? [Text({ paragraph: true, style: { color: CSS.muted, fontSize: '14px' } }, 'Nenhum ponto salvo ainda.')]
-        : favorites.map((fav, i) =>
-            View(
-              {
-                style: {
-                  display: 'flex',
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  borderBottom: i < favorites.length - 1 ? `1px solid ${CSS.border}` : 'none',
-                  padding: '8px 0'
+        ? [hint('Nenhum ponto salvo ainda. Cadastre o primeiro aqui em cima.')]
+        : favorites.map((fav) =>
+            card({ background: CSS.card, borderRadius: '10px', padding: '8px 10px', marginTop: '6px' }, [
+              chip(fav.line, 46),
+              View({ style: { flex: 1, minWidth: 0 } }, [
+                Text({ bold: true, style: { fontSize: '14px', color: CSS.text } }, fav.name),
+                Text({ style: { fontSize: '12px', color: CSS.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, favoriteStreet(fav, GTFS_INDEX))
+              ]),
+              Button({
+                label: 'Remover',
+                style: { fontSize: '12px', fontWeight: 'bold', background: CSS.danger, color: CSS.white, borderRadius: '14px', padding: '5px 10px' },
+                onClick: () => {
+                  const current = readFavorites(storage)
+                  // Guarda o removido (e onde estava) para o "Desfazer".
+                  storage.setItem(LAST_REMOVED_KEY, JSON.stringify(removalRecord(current, fav)))
+                  writeFavorites(storage, removeFavorite(current, fav))
+                  setMessage('success', `“${fav.name}” removido.`, true)
                 }
-              },
-              [
-                View({ style: { flex: 1 } }, [
-                  Text({ bold: true, style: { fontSize: '16px', color: CSS.text } }, fav.name),
-                  Text(
-                    { style: { fontSize: '13px', color: CSS.muted } },
-                    favoriteSubtitle(fav)
-                  )
-                ]),
-                Button({
-                  label: 'Remover',
-                  style: buttonStyle(CSS.danger, 'white'),
-                  onClick: () => {
-                    writeFavorites(storage, removeFavorite(readFavorites(storage), fav))
-                    setMessage('success', `Ponto "${fav.name}" removido.`)
-                  }
-                })
-              ]
-            )
+              })
+            ])
           )
 
-    return View({ style: { padding: '12px 20px', background: CSS.bg, minHeight: '100vh' } }, [
+    return View({ style: { padding: '16px 18px 24px', background: CSS.bg, minHeight: '100vh' } }, [
       Text({ bold: true, style: { fontSize: '22px', color: CSS.title, marginBottom: '4px' } }, 'Cadê o Busão'),
       // Barrinha com 4 cores do gradiente "Pôr do sol", igual à do relógio.
       View(
         { style: { display: 'flex', flexDirection: 'row', marginBottom: '8px' } },
         [CSS.gradient[1], CSS.gradient[3], CSS.gradient[4], CSS.gradient[5]].map((color) =>
-          View({ style: { width: '14px', height: '4px', background: color } }, [])
+          View({ style: { width: '18px', height: '4px', borderRadius: '2px', marginRight: '2px', background: color } }, [])
         )
       ),
-      Text(
-        { paragraph: true, style: { fontSize: '14px', color: CSS.muted } },
-        'Uai, é só digitar o número da linha, escolher o sentido e o ponto. Eles aparecem na tela inicial do relógio.'
-      ),
-      Section({ title: 'Tema do relógio', style: { marginTop: '12px' } }, [
-        themePicker(storage),
-        Text(
-          { paragraph: true, style: { fontSize: '12px', color: CSS.muted, marginTop: '6px' } },
-          'Escuro (padrão) gasta menos bateria na tela AMOLED. Vale para todas as telas do relógio.'
-        )
-      ]),
-      Section({ title: 'Novo ponto', style: { marginTop: '12px' } }, [
-        ...pick,
-        ...manual,
-        messageBox(message),
-        addButton
-      ].filter(Boolean)),
-      Section(
-        {
-          title: `Pontos salvos (${favorites.length})`,
-          style: {
-            marginTop: '16px',
-            padding: '4px 12px',
-            border: `1px solid ${CSS.border}`,
-            borderRadius: '8px',
-            background: CSS.card
-          }
-        },
-        list
-      ),
+      Text({ paragraph: true, style: { fontSize: '13px', color: CSS.muted } }, 'Uai, é só digitar o número da linha, escolher o sentido e o ponto.'),
+      sectionTitle('Tema do relógio'),
+      themePicker(storage),
+      sectionTitle('Novo ponto'),
+      ...pick,
+      ...manual,
+      addButton,
+      messageBox(message, undo),
+      sectionTitle(`Pontos salvos (${favorites.length})`),
+      ...list,
       Text(
         { paragraph: true, style: { fontSize: '11px', color: CSS.muted, marginTop: '16px' } },
         `Linhas, pontos e trajetos: GTFS oficial de Belo Horizonte (SUMOB/PBH), versão ${GTFS_INDEX.feed}. Posição dos ônibus: dados abertos de tempo real da PBH.`
       )
-    ])
+    ].filter(Boolean))
   }
 })

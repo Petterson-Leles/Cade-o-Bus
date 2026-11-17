@@ -6,6 +6,16 @@
 // - avançado (draft.manual): nome, linha, latitude e longitude digitados.
 import { MAX_TEXT_LEN } from '../utils/favorites.js'
 import { findLine, lineStops, stopById, normalizeLineNumber, searchLines } from './gtfs.js'
+import { abbreviateStreet, foldText, directionTitle } from './text.js'
+
+// Quantas sugestões de linha mostrar enquanto o número não bate com uma linha.
+export const MAX_LINE_SUGGESTIONS = 6
+// Atalhos para o nome do ponto.
+export const NAME_SHORTCUTS = Object.freeze([
+  Object.freeze({ label: '🏠 Casa', value: 'Casa' }),
+  Object.freeze({ label: '💼 Trabalho', value: 'Trabalho' }),
+  Object.freeze({ label: '🎓 Faculdade', value: 'Faculdade' })
+])
 
 // Campos do modo avançado (manual).
 export const DRAFT_FIELDS = [
@@ -108,12 +118,16 @@ export function applyDraftChange(draft, key, value) {
     if (normalizeLineNumber(text) !== normalizeLineNumber(base.line)) {
       delete next.dir
       delete next.stopId
+      delete next.q
     }
     return next
   }
   if (key === 'dir') {
     const next = { ...base, dir: text }
-    if (text !== String(base.dir === undefined ? '' : base.dir)) delete next.stopId
+    if (text !== String(base.dir === undefined ? '' : base.dir)) {
+      delete next.stopId
+      delete next.q
+    }
     return next
   }
   return { ...base, [key]: text }
@@ -126,25 +140,36 @@ function draftDir(draft) {
 }
 
 // O que a tela mostra para o rascunho atual (modo lista):
-// { line, suggestions, dirOptions, dir, stopOptions, stop }.
+// { line, suggestions, missing, dirOptions, dirCards, dir, stops, stopOptions, stop }.
+// - suggestions: até 6 linhas que começam com o que foi digitado (sem linha exata);
+// - missing: digitou algo que não é começo de nenhuma linha;
+// - dirCards: [{ dir, title: 'Para <destino>', detail: '<n> pontos · sai de <1º ponto>' }];
+// - stops: pontos do sentido escolhido, na ordem ({ id, name, street, seq, lat, lon }).
 // Com um sentido só, ele já vem escolhido.
 export function draftChoices(draft, index) {
   const d = draft || {}
-  const out = { line: null, suggestions: [], dirOptions: [], dir: null, stopOptions: [], stop: null }
+  const out = { line: null, suggestions: [], missing: false, dirOptions: [], dirCards: [], dir: null, stops: [], stopOptions: [], stop: null }
   const typed = normalizeLineNumber(d.line)
   if (!typed) return out
   const line = findLine(index, typed)
   if (!line) {
-    out.suggestions = searchLines(index, typed, 6)
+    out.suggestions = searchLines(index, typed, MAX_LINE_SUGGESTIONS)
+    out.missing = out.suggestions.length === 0
     return out
   }
   out.line = line
   out.dirOptions = line.dirs.map((x) => ({ name: `Sentido ${x.headsign || x.dir}`, value: String(x.dir) }))
+  out.dirCards = line.dirs.map((x) => {
+    const first = lineStops(index, line.number, x.dir)[0]
+    const from = first ? ` · sai de ${abbreviateStreet(first.name)}` : ''
+    return { dir: x.dir, title: directionTitle(x.headsign), detail: `${x.stops} ${x.stops === 1 ? 'ponto' : 'pontos'}${from}` }
+  })
   let dir = draftDir(d)
   if (dir === null && line.dirs.length === 1) dir = line.dirs[0].dir
   if (dir === null || !line.dirs.some((x) => x.dir === dir)) return out
   out.dir = dir
   const stops = lineStops(index, line.number, dir)
+  out.stops = stops.map((st) => ({ ...st, street: abbreviateStreet(st.name) }))
   out.stopOptions = stops.map((st) => ({ name: `${st.seq}. ${st.name}`, value: st.id }))
   const wanted = String(d.stopId || '').trim()
   out.stop = stops.find((st) => st.id === wanted) || null
@@ -205,4 +230,36 @@ export function buildFavorite(draft, id, index) {
     lat: String(stop.lat),
     lon: String(stop.lon)
   }
+}
+
+// Busca de ponto pela rua, ignorando acentos e maiúsculas. Mantém a ordem da viagem.
+export function filterStops(stops, query) {
+  const q = foldText(query)
+  const list = Array.isArray(stops) ? stops : []
+  if (!q) return list.slice()
+  return list.filter((st) => foldText(st.name).indexOf(q) >= 0 || foldText(st.street).indexOf(q) >= 0)
+}
+
+// Subtítulo de um ponto salvo: rua abreviada (GTFS) ou as coordenadas.
+export function favoriteStreet(fav, index) {
+  const stop = fav && fav.stopId ? stopById(index, fav.stopId) : null
+  if (stop && stop.name) return abbreviateStreet(stop.name)
+  return fav ? `${fav.lat}, ${fav.lon}` : ''
+}
+
+// "Desfazer" da remoção: o removido e a posição em que estava.
+export function removalRecord(list, fav) {
+  const same = (f) => (fav && fav.id ? f.id === fav.id : JSON.stringify(f) === JSON.stringify(fav))
+  const i = (Array.isArray(list) ? list : []).findIndex(same)
+  return { fav, index: i < 0 ? 0 : i }
+}
+
+// Põe o removido de volta na mesma posição (se ainda não estiver na lista).
+export function undoRemoval(list, record) {
+  const base = Array.isArray(list) ? list.slice() : []
+  if (!record || !record.fav || typeof record.fav !== 'object') return base
+  if (record.fav.id && base.some((f) => f.id === record.fav.id)) return base
+  const i = Math.max(0, Math.min(base.length, Number(record.index) || 0))
+  base.splice(i, 0, record.fav)
+  return base
 }

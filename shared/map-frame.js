@@ -58,6 +58,22 @@ export function chooseFrame({ busXY = null, zoom = null, viewR = MAP_VIEW_R, ico
   return { k: Math.round(k), center: [ux * shift, uy * shift], auto: true }
 }
 
+// Fica no enquadramento automático anterior enquanto ele ainda serve: ônibus e
+// ponto cabem com folga e a escala não ficou longe demais da ideal (menos de
+// `maxZoomOut` vezes). Assim o mapa não "pula" a cada atualização e o ícone
+// continua deslizando. prev/ideal: saídas de chooseFrame.
+export function stableFrame(prev, ideal, busXY, { viewR = MAP_VIEW_R, iconR = FRAME_ICON_R, maxZoomOut = 1.6 } = {}) {
+  if (!prev || !ideal || !prev.auto || !ideal.auto || !Array.isArray(prev.center)) return ideal
+  if (!(prev.k > 0) || ideal.k / prev.k > maxZoomOut || prev.k > ideal.k * 1.05) return ideal
+  const fits = (m) => {
+    if (!m) return true
+    const x = ((m[0] - prev.center[0]) * prev.k) / 1000
+    const y = ((m[1] - prev.center[1]) * prev.k) / 1000
+    return Math.hypot(x, y) <= viewR - iconR + 2 // +2: a escala é arredondada
+  }
+  return fits([0, 0]) && fits(busXY) ? prev : ideal
+}
+
 // Coroa digital: graus girados -> nova escala (15° ≈ 1,35×). Positivo aproxima.
 export function zoomByCrown(k, degree) {
   const d = Number(degree)

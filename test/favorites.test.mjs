@@ -89,3 +89,10 @@ test('removeFavorite sem id compara também sentido e ponto', () => {
   const b = { name: 'P', line: '1', lat: '1', lon: '2', dir: 1, stopId: '10' }
   assert.deepEqual(removeFavorite([a, b], { ...b }), [a])
 })
+
+test('sanitizeFavorites guarda a rua (street) que o side service acrescenta', () => {
+  const [f] = sanitizeFavorites([{ name: 'Casa', line: '9250', lat: '-19.9', lon: '-43.9', street: '  Av. Afonso Pena ' }])
+  assert.equal(f.street, 'Av. Afonso Pena')
+  const [g] = sanitizeFavorites([{ name: 'Casa', line: '9250', lat: '-19.9', lon: '-43.9', street: 42 }])
+  assert.equal(g.street, undefined)
+})

@@ -187,3 +187,18 @@ test('nearestBuses: codes (tabela NL) e distância pela rua (routeDistance)', ()
   assert.deepEqual(buses.map((x) => [x.vehicle, x.distanceM, !!x.alongRoute]), [['b', 1212, false], ['a', 3000, true]])
   assert.deepEqual(seen, [90, 90, 90])
 })
+
+test('parseBusParams aceita zoom manual só dentro dos limites', () => {
+  const base = { line: '9250', lat: '-19.9', lon: '-43.9' }
+  assert.equal(parseBusParams({ ...base, zoom: 120 }).zoom, 120)
+  assert.equal(parseBusParams({ ...base, zoom: '200' }).zoom, 200)
+  assert.equal(parseBusParams({ ...base, zoom: 5 }).zoom, undefined)
+  assert.equal(parseBusParams({ ...base, zoom: 'x' }).zoom, undefined)
+})
+
+test('nearestBuses passa o número do veículo para routeDistance', () => {
+  const rows = parseCsv('NL;NV;LT;LG;VL\n9250;40210;-19.91;-43.93;20')
+  const seen = []
+  nearestBuses(rows, { line: '9250', lat: -19.92, lon: -43.94, routeDistance: (lat, lon, extra) => (seen.push(extra.vehicle), null) })
+  assert.deepEqual(seen, ['40210'])
+})

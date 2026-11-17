@@ -179,3 +179,66 @@ test('buildFavorite pela lista guarda line, dir, stopId, name, lat e lon', () =>
     id: 'id3', name: 'Casa', line: '1234', lat: '-19.9191', lon: '-43.9386', dir: 0
   })
 })
+
+// ---- Telas novas: cartões de sentido, busca de ponto, desfazer ----
+import { filterStops, favoriteStreet, removalRecord, undoRemoval, NAME_SHORTCUTS } from '../shared/settings-form.js'
+
+test('draftChoices: linha inexistente, cartões de sentido e pontos com rua abreviada', () => {
+  assert.equal(draftChoices({ line: '92' }, INDEX).missing, false)
+  const none = draftChoices({ line: '777' }, INDEX)
+  assert.equal(none.missing, true)
+  assert.deepEqual(none.suggestions, [])
+  const c = draftChoices({ line: '9250' }, INDEX)
+  assert.deepEqual(c.dirCards, [
+    { dir: 0, title: 'Para Nova Cintra', detail: '2 pontos · sai de Av. Afonso Pena 1500' },
+    { dir: 1, title: 'Para São Geraldo', detail: '2 pontos · sai de R. da Bahia 100' }
+  ])
+  const d = draftChoices({ line: '9250', dir: '1' }, INDEX)
+  assert.deepEqual(d.stops.map((s) => [s.seq, s.street]), [[1, 'R. da Bahia 100'], [2, 'Pç. Sete']])
+})
+
+test('applyDraftChange: trocar linha ou sentido limpa a busca de ponto', () => {
+  const d = { line: '9250', dir: '1', stopId: '20', q: 'bahia' }
+  assert.equal(applyDraftChange(d, 'line', '5102').q, undefined)
+  assert.equal(applyDraftChange(d, 'dir', '0').q, undefined)
+  assert.equal(applyDraftChange(d, 'stopId', '30').q, 'bahia')
+  assert.equal(applyDraftChange(d, 'q', ' sete ').q, 'sete')
+})
+
+test('filterStops busca pela rua ignorando acentos e maiúsculas, na ordem', () => {
+  const stops = draftChoices({ line: '9250', dir: '0' }, INDEX).stops
+  assert.deepEqual(filterStops(stops, 'afonso').map((s) => s.id), ['10'])
+  assert.deepEqual(filterStops(stops, 'BAHIA').map((s) => s.id), ['20'])
+  const back = draftChoices({ line: '9250', dir: '1' }, INDEX).stops
+  assert.deepEqual(filterStops(back, 'praca').map((s) => s.id), ['30'])
+  assert.deepEqual(filterStops(back, 'pç.').map((s) => s.id), ['30'])
+  assert.deepEqual(filterStops(back, '').map((s) => s.id), ['20', '30'])
+  assert.deepEqual(filterStops(back, 'savassi'), [])
+  assert.deepEqual(filterStops(null, 'x'), [])
+})
+
+test('favoriteStreet: rua do GTFS abreviada ou as coordenadas', () => {
+  assert.equal(favoriteStreet({ stopId: '30', lat: '1', lon: '2' }, INDEX), 'Pç. Sete')
+  assert.equal(favoriteStreet({ lat: '-19.9', lon: '-43.9' }, INDEX), '-19.9, -43.9')
+})
+
+test('removalRecord e undoRemoval devolvem o ponto ao mesmo lugar', () => {
+  const list = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }, { id: 'c', name: 'C' }]
+  const rec = removalRecord(list, list[1])
+  assert.deepEqual(rec, { fav: list[1], index: 1 })
+  const after = list.filter((f) => f.id !== 'b')
+  assert.deepEqual(undoRemoval(after, rec).map((f) => f.id), ['a', 'b', 'c'])
+  // Já voltou: não duplica.
+  assert.deepEqual(undoRemoval(list, rec).map((f) => f.id), ['a', 'b', 'c'])
+  // Sem id (favorito antigo): acha pelo conteúdo.
+  const old = [{ name: 'X', line: '1' }, { name: 'Y', line: '2' }]
+  assert.equal(removalRecord(old, { name: 'Y', line: '2' }).index, 1)
+  // Índice fora da lista vai para o fim; registro ruim não muda nada.
+  assert.deepEqual(undoRemoval([{ id: 'a' }], { fav: { id: 'z' }, index: 99 }).map((f) => f.id), ['a', 'z'])
+  assert.deepEqual(undoRemoval([{ id: 'a' }], null), [{ id: 'a' }])
+  assert.deepEqual(undoRemoval([{ id: 'a' }], { fav: 'x' }), [{ id: 'a' }])
+})
+
+test('atalhos de nome', () => {
+  assert.deepEqual(NAME_SHORTCUTS.map((s) => s.value), ['Casa', 'Trabalho', 'Faculdade'])
+})

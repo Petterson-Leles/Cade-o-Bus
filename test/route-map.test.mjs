@@ -184,11 +184,16 @@ test('sanitizeMapPayload descarta o que não for inteiro em faixa', () => {
   })
   assert.deepEqual(m, {
     r: 96,
+    k: null,
+    auto: true,
     speed: 0,
+    stop: { x: 0, y: 0, clamped: false },
     route: [[0, 0, 10, 10]],
     hi: [],
+    trail: [],
     stops: [1, 2, 3, 4],
-    buses: [{ x: 1, y: -2, clamped: true }, null, null]
+    buses: [{ x: 1, y: -2, clamped: true }, null, null],
+    passed: null
   })
   assert.equal(sanitizeMapPayload(null), null)
   assert.deepEqual(sanitizeMapPayload({ stops: [1] }).stops, [])
@@ -223,4 +228,68 @@ test('animationPath: trecho destacado que começa no ônibus', () => {
   assert.deepEqual(animationPath({ ...map, buses: [{ x: 30, y: 30, clamped: false }] }), [])
   assert.deepEqual(animationPath({ hi: [], buses: [] }), [])
   assert.deepEqual(animationPath(null), [])
+})
+
+test('sanitizeMapPayload: escala, ponto, rastro e ônibus que passou', () => {
+  const m = sanitizeMapPayload({
+    k: 95.6,
+    auto: false,
+    stop: { x: 40, y: -30 },
+    trail: [1, 2, 3, 4, 'x'],
+    passed: { x: 10, y: 12, vehicle: '40210', at: 123 }
+  })
+  assert.equal(m.k, 96)
+  assert.equal(m.auto, false)
+  assert.deepEqual(m.stop, { x: 40, y: -30, clamped: false })
+  assert.deepEqual(m.trail, []) // ímpar/inválido: descartado
+  assert.deepEqual(m.passed, { x: 10, y: 12, clamped: false, vehicle: '40210', at: 123 })
+  assert.deepEqual(sanitizeMapPayload({ trail: [1, 2, 3, 4] }).trail, [1, 2, 3, 4])
+  assert.equal(sanitizeMapPayload({ passed: { x: 1, y: 1 } }).passed, null)
+  assert.equal(sanitizeMapPayload({ k: 5000 }).k, null)
+})
+
+test('buildMapPayload com centro e escala: ponto deslocado, destaque sai do ônibus e rastro atrás dele', () => {
+  const ctx = routeContext(straight, STOP)
+  const busLL = ll(-1000, 40) // 40 m fora do trajeto: o ícone vai para o trajeto
+  const bus = { lat: busLL[0], lon: busLL[1] }
+  bus.route = busOnRoute(ctx, bus)
+  // Centro no meio do ônibus e do ponto, 100 px/km.
+  const map = buildMapPayload({ ctx, stop: { id: 'eu', ...STOP }, buses: [bus], pxPerKm: 100, radiusM: 1140, center: [-500, 0], busMaxR: 90 })
+  assert.equal(map.k, 100)
+  assert.deepEqual(map.stop, { x: 50, y: 0 })
+  // Ônibus no trajeto (não no GPS): (-1000 m -> -50 px a partir do centro).
+  assert.equal(map.buses[0].x, -50)
+  assert.ok(Math.abs(map.buses[0].y) <= 1)
+  // Destaque começa exatamente onde o ícone está.
+  assert.equal(map.hi[0][0], map.buses[0].x)
+  assert.equal(map.hi[0][1], map.buses[0].y)
+  assert.deepEqual(animationPath(map), map.hi[0])
+  // Rastro: bolinhas a cada 10 px atrás do ônibus (oeste dele), até a borda do recorte.
+  assert.ok(map.trail.length >= 8 && map.trail.length % 2 === 0)
+  for (let i = 0; i < map.trail.length; i += 2) assert.ok(map.trail[i] <= map.buses[0].x)
+  assert.equal(map.trail[2] - map.trail[0], 10)
+})
+
+test('buildMapPayload: rastro limitado a trailM e ônibus que passou na escala do mapa', () => {
+  const ctx = routeContext(straight, STOP)
+  const bus = { lat: ll(-1000, 0)[0], lon: ll(-1000, 0)[1] }
+  bus.route = busOnRoute(ctx, bus)
+  const map = buildMapPayload({
+    ctx,
+    stop: STOP,
+    buses: [bus],
+    pxPerKm: 100,
+    radiusM: 5000,
+    busMaxR: 90,
+    trailM: 300,
+    passed: { lat: ll(300, 0)[0], lon: ll(300, 0)[1], along: 2300, vehicle: '40210', at: 99 }
+  })
+  // 300 m a 100 px/km = 30 px: bolinhas em 0, 10, 20, 30 px.
+  assert.equal(map.trail.length, 8)
+  assert.deepEqual(map.passed, { x: 30, y: 0, clamped: false, vehicle: '40210', at: 99 })
+  // Sem ônibus no trajeto: sem destaque nem rastro.
+  const none = buildMapPayload({ ctx, stop: STOP, buses: [], pxPerKm: 100, radiusM: 1000 })
+  assert.deepEqual(none.hi, [])
+  assert.deepEqual(none.trail, [])
+  assert.equal(none.passed, undefined)
 })

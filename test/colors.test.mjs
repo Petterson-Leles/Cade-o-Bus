@@ -213,3 +213,24 @@ test('busIcon: um PNG por faixa de ETA_BANDS e por tema', async () => {
     }
   }
 })
+
+test('mixColor mistura canal a canal', async () => {
+  const { mixColor } = await import('../utils/colors.js')
+  assert.equal(mixColor(0x000000, 0xffffff, 0), 0x000000)
+  assert.equal(mixColor(0x000000, 0xffffff, 1), 0xffffff)
+  assert.equal(mixColor(0x000000, 0xffffff, 0.5), 0x808080)
+  assert.equal(mixColor(0x9aa5a8, 0x141a21, 2), 0x141a21)
+})
+
+test('passedBusIcon: ícones cinza esmaecidos existem para os dois temas', async () => {
+  const { passedBusIcon } = await import('../utils/colors.js')
+  const { FADE_LEVELS } = await import('../shared/passing.js')
+  const fs = await import('node:fs')
+  assert.equal(passedBusIcon(60, 'light'), 'bus/light-passou-60.png')
+  assert.equal(passedBusIcon(33, 'x'), 'bus/dark-passou-100.png')
+  for (const theme of ['dark', 'light']) {
+    for (const level of FADE_LEVELS) {
+      assert.ok(fs.existsSync(new URL(`../assets/common.r/${passedBusIcon(level, theme)}`, import.meta.url)), `${theme} ${level}`)
+    }
+  }
+})

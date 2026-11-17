@@ -13,8 +13,8 @@ import { settingsPayload, readFavorites, FAVORITES_KEY } from '../utils/favorite
 import { THEME_KEY } from '../utils/colors'
 import { lineCodesFor } from '../shared/line-codes'
 import { lineShape, lineStops } from '../shared/gtfs'
-import { routeContext, busOnRoute, buildMapPayload, pointAt, speedPxPerSec } from '../shared/route-map'
-import { chooseFrame, MAP_VIEW_R, MAP_BUS_MAX_R } from '../shared/map-frame'
+import { routeContext, busOnRoute, buildMapPayload, pointAt, makeProjection, speedPxPerSec } from '../shared/route-map'
+import { chooseFrame, stableFrame, MAP_VIEW_R, MAP_BUS_MAX_R } from '../shared/map-frame'
 import { trackPassing, latestPassed } from '../shared/passing'
 import { summarizeEtas, withStreets, createFeedCache } from '../shared/summary'
 // Pacote gerado por scripts/build-gtfs.mjs (GTFS oficial de BH, SUMOB/PBH).
@@ -34,6 +34,8 @@ const routeCache = new Map()
 const ROUTE_CACHE_MAX = 20
 // Memória de "quem estava chegando" por ponto, para saber quem acabou de passar.
 const passingMemory = new Map()
+// Último enquadramento automático por ponto (o mapa não muda a cada atualização).
+const frameMemory = new Map()
 
 const routeKey = (params) => [params.line, params.dir, params.stopId || '', params.lat, params.lon].join('|')
 
@@ -113,9 +115,12 @@ AppSideService(
       let busXY = null
       if (first) {
         busXY = ctx && first.route && !first.route.passed ? pointAt(ctx.pts, ctx.cum, first.route.along) : null
-        if (!busXY && ctx) busXY = ctx.project(first.lat, first.lon)
+        if (!busXY) busXY = (ctx ? ctx.project : makeProjection(params))(first.lat, first.lon)
       }
-      const frame = chooseFrame({ busXY, zoom: params.zoom })
+      const key = routeKey(params)
+      const frame = stableFrame(frameMemory.get(key), chooseFrame({ busXY, zoom: params.zoom }), busXY)
+      if (frameMemory.size >= ROUTE_CACHE_MAX && !frameMemory.has(key)) frameMemory.delete(frameMemory.keys().next().value)
+      frameMemory.set(key, frame)
       const pxPerM = frame.k / 1000
       // Mini mapa já em pixels: o relógio só desenha.
       const map = buildMapPayload({
