@@ -4,7 +4,10 @@ import { encodePolyline, simplifyLatLon } from './polyline.js'
 
 export const PACKAGE_VERSION = 1
 // Tolerância da simplificação do trajeto (metros).
-export const DEFAULT_TOLERANCE_M = 8
+// 5 m ≈ 1 px na maior escala do mini mapa (260 px/km): as curvas ficam no desenho.
+export const DEFAULT_TOLERANCE_M = 5
+// Variantes (outros shapes do mesmo sentido) no máximo por linha + sentido.
+export const MAX_VARIANTS = 8
 // Viagens por padrão (linha + sentido + shape) cujas paradas são comparadas.
 export const MAX_CANDIDATE_TRIPS = 40
 
@@ -67,6 +70,8 @@ function bump(map, key) {
 
 // Viagens -> um padrão por (route_id, direction_id): o shape mais usado, o
 // headsign mais comum do sentido e as viagens candidatas daquele shape.
+// variants: os outros shapes distintos do sentido (mais usados primeiro, até
+// MAX_VARIANTS), cada um com key `${key}#${shapeId}` e suas viagens candidatas.
 // trips: [{ route_id, direction_id, shape_id, trip_headsign, trip_id }]
 export function selectPatterns(trips, maxCandidates = MAX_CANDIDATE_TRIPS) {
   const groups = new Map()
@@ -89,6 +94,11 @@ export function selectPatterns(trips, maxCandidates = MAX_CANDIDATE_TRIPS) {
   groups.forEach((g, key) => {
     const shapeId = mostCommon(g.shapes)
     const ids = g.tripsByShape.get(shapeId).slice().sort()
+    const others = []
+    g.shapes.forEach((n, id) => {
+      if (id !== shapeId && id) others.push({ id, n })
+    })
+    others.sort((a, b) => b.n - a.n || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     patterns.set(key, {
       key,
       routeId: g.routeId,
@@ -96,7 +106,13 @@ export function selectPatterns(trips, maxCandidates = MAX_CANDIDATE_TRIPS) {
       shapeId,
       headsign: mostCommon(g.heads) || '',
       tripCount: g.shapes.get(shapeId),
-      candidateTrips: ids.slice(0, maxCandidates)
+      candidateTrips: ids.slice(0, maxCandidates),
+      variants: others.slice(0, MAX_VARIANTS).map((o) => ({
+        key: `${key}#${o.id}`,
+        shapeId: o.id,
+        tripCount: o.n,
+        candidateTrips: g.tripsByShape.get(o.id).slice().sort().slice(0, maxCandidates)
+      }))
     })
   })
   return patterns
@@ -150,12 +166,13 @@ const round5 = (v) => Math.round(Number(v) * 1e5)
 // - routes: [{ route_id, route_short_name, route_long_name }]
 // - patterns: saída de selectPatterns
 // - shapes: Map(shape_id -> [[lat, lon], ...]) já em ordem
-// - stopSeqs: Map(chave do padrão -> [stop_id, ...])
+// - stopSeqs: Map(chave do padrão ou da variante -> [stop_id, ...])
 // - stops: Map(stop_id -> { name, lat, lon })
 export function buildPackage({ feed = {}, routes, patterns, shapes, stopSeqs, stops, toleranceM = DEFAULT_TOLERANCE_M }) {
   const usedStops = new Set()
   const lines = []
   const shapeOut = {}
+  const variantOut = {} // `${número}|${sentido}` -> [[polyline, [stop_ids]]] (índices depois)
   let rawPoints = 0
   let keptPoints = 0
   const byRoute = new Map()
@@ -180,6 +197,23 @@ export function buildPackage({ feed = {}, routes, patterns, shapes, stopSeqs, st
         keptPoints += simple.length
         shapeOut[`${number}|${p.dir}`] = encodePolyline(simple)
       }
+      // Variantes do sentido (outros shapes), com a sequência de pontos de cada uma.
+      const vars = []
+      const seen = new Set([shapeOut[`${number}|${p.dir}`]])
+      ;(p.variants || []).forEach((v) => {
+        const vpts = shapes.get(v.shapeId) || []
+        const vseq = (stopSeqs.get(v.key) || []).filter((id) => stops.has(id))
+        if (vpts.length < 2 || vseq.length === 0) return
+        const simple = simplifyLatLon(vpts, toleranceM)
+        const enc = encodePolyline(simple)
+        if (seen.has(enc)) return
+        seen.add(enc)
+        rawPoints += vpts.length
+        keptPoints += simple.length
+        vseq.forEach((id) => usedStops.add(id))
+        vars.push([enc, vseq])
+      })
+      if (vars.length > 0) variantOut[`${number}|${p.dir}`] = vars
     })
     if (dirs.length > 0) lines.push({ number, name: String(r.route_long_name || '').trim(), dirs })
   })
@@ -207,9 +241,18 @@ export function buildPackage({ feed = {}, routes, patterns, shapes, stopSeqs, st
   }
   return {
     index,
-    shapes: { v: PACKAGE_VERSION, feed: index.feed, shapes: shapeOut },
-    stats: { lines: lines.length, stops: ids.length, rawPoints, keptPoints }
+    // variants: { 'número|sentido': [[polyline, [índices dos pontos]], ...] }
+    shapes: { v: PACKAGE_VERSION, feed: index.feed, shapes: shapeOut, variants: remapVariants(variantOut, pos) },
+    stats: { lines: lines.length, stops: ids.length, rawPoints, keptPoints, variants: Object.keys(variantOut).reduce((n, k) => n + variantOut[k].length, 0) }
   }
+}
+
+function remapVariants(variantOut, pos) {
+  const out = {}
+  Object.keys(variantOut).forEach((k) => {
+    out[k] = variantOut[k].map(([enc, seq]) => [enc, seq.map((id) => pos.get(id))])
+  })
+  return out
 }
 
 // Objeto -> texto de um módulo ES (export default).

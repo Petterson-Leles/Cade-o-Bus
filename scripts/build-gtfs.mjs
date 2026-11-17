@@ -119,6 +119,11 @@ async function main() {
   patterns.forEach((p) => {
     wantedShapes.add(p.shapeId)
     p.candidateTrips.forEach((id) => tripToPattern.set(id, p.key))
+    // Variantes (outros shapes do mesmo sentido): também os trajetos e as paradas.
+    p.variants.forEach((v) => {
+      wantedShapes.add(v.shapeId)
+      v.candidateTrips.forEach((id) => tripToPattern.set(id, v.key))
+    })
   })
   log(`${patterns.size} padrões (linha + sentido)`)
 
@@ -159,6 +164,10 @@ async function main() {
   patterns.forEach((p) => {
     const seqs = p.candidateTrips.map((id) => (tripStops.has(id) ? orderStops(tripStops.get(id)) : []))
     stopSeqs.set(p.key, chooseStopSequence(seqs))
+    p.variants.forEach((v) => {
+      const vs = v.candidateTrips.map((id) => (tripStops.has(id) ? orderStops(tripStops.get(id)) : []))
+      stopSeqs.set(v.key, chooseStopSequence(vs))
+    })
   })
 
   const stops = new Map()
@@ -185,7 +194,7 @@ async function main() {
     const gz = zlib.gzipSync(text).length
     log(`${path.relative(root, file)}: ${(text.length / 1024).toFixed(0)} KB (gzip ${(gz / 1024).toFixed(0)} KB)`)
   }
-  log(`${stats.lines} linhas, ${stats.stops} pontos, trajetos ${stats.rawPoints} -> ${stats.keptPoints} vértices (DP ${DEFAULT_TOLERANCE_M} m)`)
+  log(`${stats.lines} linhas, ${stats.stops} pontos, trajetos ${stats.rawPoints} -> ${stats.keptPoints} vértices (DP ${DEFAULT_TOLERANCE_M} m), ${stats.variants} variantes`)
 }
 
 main().catch((e) => {

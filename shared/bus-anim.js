@@ -2,13 +2,19 @@
 // test/bus-anim.test.mjs). O relógio chama animFrame a cada ~150 ms com o
 // relógio real (Date.now()), então a posição depende do tempo decorrido e não
 // do número de passos: se um quadro atrasa, o ônibus não fica para trás.
-import { advanceAlong, blend } from './route-map.js'
+//
+// Tudo anda AO LONGO do trajeto: o caminho é a polyline (px) do ônibus até o
+// ponto e a posição é a distância percorrida nela (along). Quando chega posição
+// nova, a correção interpola a distância que falta até o ponto (de onde o ícone
+// estava para onde o ônibus está), nunca x/y em linha reta, então o ícone
+// contorna as curvas também na correção.
+import { advanceAlong, pathLength } from './route-map.js'
 
 // Intervalo entre quadros no relógio (ms).
 export const ANIM_TICK_MS = 150
 // Correção suave até a posição nova quando chega dado do celular (ms).
 export const ANIM_FIX_MS = 900
-// Diferença acima disso (px de design) pula direto em vez de deslizar.
+// Diferença acima disso (px de design, ao longo do trajeto) pula direto.
 export const ANIM_JUMP_PX = 80
 // Para sozinha depois disso sem posição nova (bateria).
 export const ANIM_MAX_MS = 45 * 1000
@@ -19,29 +25,37 @@ export function easeOut(t) {
   return 1 - Math.pow(1 - x, 3)
 }
 
-// Começo de uma animação. prev: onde o ícone está agora ({ x, y } ou null);
-// target: posição real nova; path: polyline do ônibus ao ponto (px); speed: px/s.
-// Devolve o objeto da animação (sem timer) ou null se não há o que animar.
-export function startAnimation({ prev = null, target, path = [], speed = 0, now = Date.now(), jumpPx = ANIM_JUMP_PX }) {
-  if (!target) return null
-  const moving = Array.isArray(path) && path.length >= 4 && speed > 0
-  const gap = prev ? Math.hypot(prev.x - target.x, prev.y - target.y) : Infinity
-  const fixFrom = prev && gap > 0.5 && gap <= jumpPx ? { x: prev.x, y: prev.y } : null
-  if (!moving && !fixFrom) return null
-  return { path: moving ? path : [], speed: moving ? speed : 0, startedAt: now, fixFrom, target: { x: target.x, y: target.y } }
+// Começo de uma animação.
+// - path: polyline plana [x0, y0, ...] do ônibus até o ponto (fim = ponto);
+// - speed: px/s; prevRemain: quanto faltava (px ao longo do trajeto) para o ícone
+//   chegar ao ponto no quadro atual, ou null (sem posição antiga no mesmo enquadramento).
+// Devolve { path, length, speed, startedAt, delta } ou null (sem caminho: o
+// relógio põe o ícone direto na posição). delta = prevRemain - length: a
+// diferença que a correção desfaz com ease-out (0 = sem correção).
+export function startAnimation({ path, speed = 0, prevRemain = null, now = Date.now(), jumpPx = ANIM_JUMP_PX }) {
+  if (!Array.isArray(path) || path.length < 4) return null
+  const length = pathLength(path)
+  if (!(length > 0)) return null
+  let delta = 0
+  if (typeof prevRemain === 'number' && Number.isFinite(prevRemain)) {
+    const d = prevRemain - length
+    if (Math.abs(d) <= jumpPx) delta = d
+  }
+  const v = speed > 0 ? speed : 0
+  if (v === 0 && Math.abs(delta) < 0.5) return null
+  return { path, length, speed: v, startedAt: now, delta }
 }
 
-// Onde o ícone deve estar no instante `now`: { x, y, done }.
-// - anda pelo caminho a `speed` px/s desde startedAt (para no ponto do usuário);
-// - nos primeiros fixMs mistura, com ease-out, a posição antiga do ícone com a do caminho;
-// - done: chegou ao fim do caminho e a correção acabou, ou passou de maxMs.
+// Onde o ícone deve estar no instante `now`: { x, y, along, remain, done }.
+// along = speed * t - delta * (1 - easeOut(t / fixMs)), preso entre 0 e o fim.
+// done: chegou ao ponto e a correção acabou, ou passou de maxMs (bateria).
 export function animFrame(anim, now = Date.now(), { fixMs = ANIM_FIX_MS, maxMs = ANIM_MAX_MS } = {}) {
   if (!anim) return null
   const elapsed = Math.max(0, now - anim.startedAt)
-  let pos = anim.path.length >= 4 ? advanceAlong(anim.path, (anim.speed * Math.min(elapsed, maxMs)) / 1000) : null
-  const atEnd = !pos || pos.done
-  if (!pos) pos = { x: anim.target.x, y: anim.target.y }
-  const fixing = !!anim.fixFrom && elapsed < fixMs
-  if (anim.fixFrom) pos = blend(anim.fixFrom, pos, fixing ? easeOut(elapsed / fixMs) : 1)
-  return { x: pos.x, y: pos.y, done: elapsed >= maxMs || (atEnd && !fixing) }
+  const t = Math.min(elapsed, maxMs)
+  const fixing = anim.delta !== 0 && elapsed < fixMs
+  const corr = anim.delta * (1 - (fixing ? easeOut(elapsed / fixMs) : 1))
+  const along = Math.max(0, Math.min(anim.length, (anim.speed * t) / 1000 - corr))
+  const pos = advanceAlong(anim.path, along)
+  return { x: pos.x, y: pos.y, along, remain: anim.length - along, done: elapsed >= maxMs || (!fixing && (along >= anim.length || anim.speed === 0)) }
 }

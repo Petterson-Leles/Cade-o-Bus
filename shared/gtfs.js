@@ -83,3 +83,22 @@ export function searchLines(index, prefix, limit = 8) {
   }
   return out
 }
+
+// Todos os trajetos da linha naquele sentido: o principal (mais usado) primeiro e
+// depois as variantes (outros shapes do GTFS), cada um com os seus pontos:
+// [{ shape: [[lat, lon], ...], stops: [{ id, name, lat, lon, seq }], main }].
+export function lineVariants(shapesPkg, index, number, dir) {
+  const out = []
+  const shape = lineShape(shapesPkg, number, dir)
+  const stops = lineStops(index, number, dir)
+  if (shape.length >= 2 || stops.length > 0) out.push({ shape, stops, main: true })
+  const map = shapesPkg && shapesPkg.variants
+  const key = `${normalizeLineNumber(number)}|${Number(dir)}`
+  if (!map || !Object.prototype.hasOwnProperty.call(map, key) || !Array.isArray(map[key])) return out
+  map[key].forEach((v) => {
+    if (!Array.isArray(v) || typeof v[0] !== 'string' || !Array.isArray(v[1])) return
+    const vs = v[1].map((i, seq) => ({ ...stopAt(index, i), seq: seq + 1 })).filter((s) => s.id)
+    out.push({ shape: decodePolyline(v[0]), stops: vs, main: false })
+  })
+  return out
+}
