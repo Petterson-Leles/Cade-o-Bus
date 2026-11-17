@@ -1,45 +1,10 @@
 // Tela de configurações (abre no app Zepp do celular): cadastrar pontos favoritos.
-import { readFavorites, writeFavorites } from '../utils/favorites'
+import { readFavorites, writeFavorites, newFavoriteId, removeFavorite } from '../utils/favorites'
 import { CSS } from '../utils/colors'
+import { DRAFT_FIELDS, readJson, validate, applyDraftChange, buildFavorite } from '../shared/settings-form'
 
 const DRAFT_KEY = 'draft'
 const MESSAGE_KEY = 'formMessage'
-
-const DRAFT_FIELDS = [
-  { key: 'name', label: 'Nome do ponto', placeholder: 'Ex.: Casa' },
-  { key: 'line', label: 'Código da linha BHTrans (campo NL)', placeholder: 'Ex.: 1234' },
-  { key: 'lat', label: 'Latitude do ponto', placeholder: 'Ex.: -19.9191' },
-  { key: 'lon', label: 'Longitude do ponto', placeholder: 'Ex.: -43.9386' }
-]
-
-function readJson(storage, key, fallback) {
-  try {
-    const raw = storage.getItem(key)
-    return raw ? JSON.parse(raw) : fallback
-  } catch (e) {
-    return fallback
-  }
-}
-
-function toCoord(value) {
-  const n = Number(String(value || '').replace(',', '.'))
-  return Number.isFinite(n) ? n : NaN
-}
-
-// Devolve a lista de problemas do rascunho (vazia = pode salvar).
-function validate(draft) {
-  const errors = []
-  DRAFT_FIELDS.forEach((f) => {
-    if (!draft[f.key]) errors.push(`Preencha "${f.label}".`)
-  })
-  if (draft.lat && !(Math.abs(toCoord(draft.lat)) <= 90)) {
-    errors.push('Latitude inválida: use número com ponto, ex.: -19.9191.')
-  }
-  if (draft.lon && !(Math.abs(toCoord(draft.lon)) <= 180)) {
-    errors.push('Longitude inválida: use número com ponto, ex.: -43.9386.')
-  }
-  return errors
-}
 
 const buttonStyle = (bg, color) => ({
   fontSize: '15px',
@@ -86,9 +51,11 @@ AppSettingsPage({
         labelStyle: { fontSize: '14px', color: CSS.text },
         subStyle: { fontSize: '16px', color: CSS.text },
         onChange: (val) => {
-          storage.setItem(DRAFT_KEY, JSON.stringify({ ...draft, [f.key]: String(val).trim() }))
+          // Relê o rascunho na hora: as variáveis do build podem estar velhas.
+          const current = readJson(storage, DRAFT_KEY, {})
+          storage.setItem(DRAFT_KEY, JSON.stringify(applyDraftChange(current, f.key, val)))
           // Ao editar, some a mensagem antiga.
-          if (message) storage.removeItem(MESSAGE_KEY)
+          if (storage.getItem(MESSAGE_KEY)) storage.removeItem(MESSAGE_KEY)
         }
       })
     )
@@ -97,18 +64,14 @@ AppSettingsPage({
       label: 'Adicionar ponto',
       style: buttonStyle(CSS.primary, CSS.primaryText),
       onClick: () => {
-        const errors = validate(draft)
+        const current = readJson(storage, DRAFT_KEY, {})
+        const errors = validate(current)
         if (errors.length > 0) {
           setMessage('error', errors.join('\n'))
           return
         }
-        const fav = {
-          name: draft.name,
-          line: draft.line,
-          lat: String(toCoord(draft.lat)),
-          lon: String(toCoord(draft.lon))
-        }
-        writeFavorites(storage, [...favorites, fav])
+        const fav = buildFavorite(current, newFavoriteId())
+        writeFavorites(storage, [...readFavorites(storage), fav])
         storage.setItem(DRAFT_KEY, '{}')
         setMessage('success', `Ponto "${fav.name}" salvo. Ele já aparece no relógio.`)
       }
@@ -140,7 +103,7 @@ AppSettingsPage({
                   label: 'Remover',
                   style: buttonStyle(CSS.danger, 'white'),
                   onClick: () => {
-                    writeFavorites(storage, favorites.filter((_, j) => j !== i))
+                    writeFavorites(storage, removeFavorite(readFavorites(storage), fav))
                     setMessage('success', `Ponto "${fav.name}" removido.`)
                   }
                 })

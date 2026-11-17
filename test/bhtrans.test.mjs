@@ -5,7 +5,12 @@ import {
   parseTimestamp,
   distanceMeters,
   nearestBuses,
-  formatDistance
+  formatDistance,
+  isValidFeed,
+  readFeedResponse,
+  parseBusParams,
+  withTimeout,
+  MAX_FEED_CHARS
 } from '../shared/bhtrans.js'
 
 const CSV = [
@@ -28,8 +33,10 @@ test('parseCsv aceita vírgula como separador e texto vazio', () => {
   assert.equal(parseCsv('NL,LT\n1,2')[0].LT, '2')
 })
 
-test('parseTimestamp', () => {
-  assert.equal(parseTimestamp('20261117120000'), new Date(2026, 10, 17, 12, 0, 0).getTime())
+test('parseTimestamp lê HR como horário de Brasília (UTC-3), qualquer que seja o fuso do aparelho', () => {
+  assert.equal(parseTimestamp('20261117120000'), Date.UTC(2026, 10, 17, 15, 0, 0))
+  // virada do dia: 22h em BH = 01h UTC do dia seguinte
+  assert.equal(parseTimestamp('20261231220000'), Date.UTC(2027, 0, 1, 1, 0, 0))
   assert.equal(parseTimestamp('lixo'), null)
 })
 
@@ -38,8 +45,11 @@ test('distanceMeters: 0,01 grau de latitude ≈ 1,1 km', () => {
   assert.ok(d > 1100 && d < 1120, `d=${d}`)
 })
 
-test('nearestBuses filtra pela linha e ordena pela distância', () => {
-  const now = new Date(2026, 10, 17, 12, 0, 30).getTime()
+// 12:00:30 em Brasília
+const NOW = Date.UTC(2026, 10, 17, 15, 0, 30)
+
+test('nearestBuses filtra pela linha e ordena pela chegada', () => {
+  const now = NOW
   const buses = nearestBuses(parseCsv(CSV), { line: '1234', lat: -19.9191, lon: -43.9386, now })
   assert.deepEqual(
     buses.map((b) => b.vehicle),
@@ -55,4 +65,80 @@ test('nearestBuses filtra pela linha e ordena pela distância', () => {
 test('formatDistance', () => {
   assert.equal(formatDistance(350), '350 m')
   assert.equal(formatDistance(1530), '1,5 km')
+})
+
+test('nearestBuses: ponto com coordenada inválida devolve []', () => {
+  const rows = parseCsv(CSV)
+  assert.deepEqual(nearestBuses(rows, { line: '1234', lat: 'abc', lon: -43.9, now: NOW }), [])
+  assert.deepEqual(nearestBuses(rows, { line: '1234', lat: undefined, lon: -43.9, now: NOW }), [])
+})
+
+test('nearestBuses descarta posição com mais de maxAgeSec (padrão 10 min)', () => {
+  const csv = [
+    'HR;LT;LG;NV;VL;NL',
+    '20261117120000;-19,9191;-43,9386;novo;30;1',
+    '20261117114900;-19,9191;-43,9386;velho;30;1',
+    'sem-hora;-19,9195;-43,9386;semhora;30;1'
+  ].join('\n')
+  const rows = parseCsv(csv)
+  assert.deepEqual(nearestBuses(rows, { line: '1', lat: -19.9191, lon: -43.9386, now: NOW }).map((b) => b.vehicle), ['novo', 'semhora'])
+  assert.deepEqual(
+    nearestBuses(rows, { line: '1', lat: -19.9191, lon: -43.9386, now: NOW, maxAgeSec: 20 * 60 }).map((b) => b.vehicle),
+    ['novo', 'velho', 'semhora']
+  )
+})
+
+test('nearestBuses limita a velocidade do ETA a 60 km/h e ordena por etaMin, depois distância', () => {
+  const csv = [
+    'HR;LT;LG;NV;VL;NL',
+    // ~5,6 km a 200 km/h (pico de GPS): com teto de 60 km/h dá ~6 min, não 2
+    '20261117120000;-19,9691;-43,9386;rapido;200;1',
+    // ~2,2 km parado (15 km/h) -> ~9 min
+    '20261117120000;-19,9391;-43,9386;parado;0;1',
+    // ~1,1 km a 60 km/h -> 1 min; mesmo ETA que o seguinte, mas mais longe
+    '20261117120000;-19,9291;-43,9386;longe;60;1',
+    '20261117120000;-19,9201;-43,9386;perto;60;1'
+  ].join('\n')
+  const buses = nearestBuses(parseCsv(csv), { line: '1', lat: -19.9191, lon: -43.9386, now: NOW, limit: 4 })
+  assert.deepEqual(buses.map((b) => b.vehicle), ['perto', 'longe', 'rapido', 'parado'])
+  assert.equal(buses[2].etaMin, 6)
+  assert.equal(buses[3].etaMin, 9)
+})
+
+test('isValidFeed exige cabeçalho com NL, LT e LG e tamanho razoável', () => {
+  assert.equal(isValidFeed(CSV), true)
+  assert.equal(isValidFeed('nl,lt,lg\n1,2,3'), true)
+  assert.equal(isValidFeed('<html>Acesso Bloqueado</html>'), false)
+  assert.equal(isValidFeed('HR;LT;LG;NV\n1;2;3;4'), false)
+  assert.equal(isValidFeed(''), false)
+  assert.equal(isValidFeed(null), false)
+  assert.equal(isValidFeed({}), false)
+  assert.equal(isValidFeed('NL;LT;LG\n' + 'x'.repeat(MAX_FEED_CHARS)), false)
+})
+
+test('readFeedResponse lança erro em status, corpo ou cabeçalho ruins', () => {
+  assert.equal(readFeedResponse({ status: 200, body: CSV }), CSV)
+  assert.throws(() => readFeedResponse({ status: 403, body: CSV }), /HTTP 403/)
+  assert.throws(() => readFeedResponse({ status: 500, body: '' }), /HTTP 500/)
+  assert.throws(() => readFeedResponse({ status: 200, body: { a: 1 } }), /texto/)
+  assert.throws(() => readFeedResponse({ status: 200, body: undefined }), /texto/)
+  assert.throws(() => readFeedResponse({ status: 200, body: 'Acesso Bloqueado' }), /Formato/)
+  assert.throws(() => readFeedResponse({ status: 200, body: 'x'.repeat(MAX_FEED_CHARS + 1) }), /grande/)
+  assert.throws(() => readFeedResponse(null))
+})
+
+test('parseBusParams valida linha e coordenadas', () => {
+  assert.deepEqual(parseBusParams({ line: ' 1234 ', lat: '-19.9', lon: -43.9 }), { line: '1234', lat: -19.9, lon: -43.9 })
+  assert.deepEqual(parseBusParams({ line: 1234, lat: '-19,9', lon: '-43,9' }), { line: '1234', lat: -19.9, lon: -43.9 })
+  assert.equal(parseBusParams({ line: '', lat: 1, lon: 1 }), null)
+  assert.equal(parseBusParams({ line: '1', lat: 'x', lon: 1 }), null)
+  assert.equal(parseBusParams({ line: '1', lat: 1 }), null)
+  assert.equal(parseBusParams({ line: {}, lat: 1, lon: 1 }), null)
+  assert.equal(parseBusParams(null), null)
+})
+
+test('withTimeout rejeita se demorar e repassa o resultado se não', async () => {
+  assert.equal(await withTimeout(Promise.resolve(42), 50), 42)
+  await assert.rejects(withTimeout(new Promise(() => {}), 20), /Tempo esgotado/)
+  await assert.rejects(withTimeout(Promise.reject(new Error('falhou')), 50), /falhou/)
 })

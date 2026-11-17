@@ -1,4 +1,4 @@
-// Tela de um ponto: destaca o ônibus mais próximo e lista os seguintes. Atualiza a cada 30 s.
+// Tela de um ponto: destaca o ônibus que chega primeiro e lista os seguintes. Atualiza 30 s após cada resposta.
 import * as hmUI from '@zos/ui'
 import { px } from '@zos/utils'
 import { BasePage } from '@zeppos/zml/base-page'
@@ -34,15 +34,19 @@ function ageText(sec) {
 
 Page(
   BasePage({
-    state: {
-      fav: null,
-      timer: null,
-      dotsTimer: null,
-      hasData: false,
-      w: {}
-    },
-
     onInit(params) {
+      // Estado próprio de cada abertura da página (não reaproveita o objeto do módulo).
+      // Mantém o que a zml já colocou em this.state (ex.: messaging).
+      this.state = {
+        ...this.state,
+        fav: null,
+        timer: null,
+        dotsTimer: null,
+        hasData: false,
+        loading: false,
+        destroyed: false,
+        w: {}
+      }
       try {
         this.state.fav = JSON.parse(params)
       } catch (e) {
@@ -109,7 +113,6 @@ Page(
       }
       this.showLoading()
       this.refresh()
-      this.state.timer = setInterval(() => this.refresh(), REFRESH_MS)
     },
 
     setVisible(widgets, visible) {
@@ -147,16 +150,30 @@ Page(
       w.statusDetail.setProperty(hmUI.prop.TEXT, detail || '')
     },
 
+    // Uma consulta por vez: a próxima só é agendada quando esta termina.
     refresh() {
+      if (this.state.destroyed || this.state.loading) return
+      this.state.loading = true
+      if (this.state.timer) clearTimeout(this.state.timer)
+      this.state.timer = null
       const { line, lat, lon } = this.state.fav
       // Com dados na tela, só avisa no rodapé em vez de apagar tudo.
       if (this.state.hasData) this.state.w.footer.setProperty(hmUI.prop.TEXT, 'Atualizando...')
+      const done = () => {
+        this.state.loading = false
+        if (!this.state.destroyed) this.state.timer = setTimeout(() => this.refresh(), REFRESH_MS)
+      }
       this.request({ method: 'GET_BUSES', params: { line, lat, lon } })
-        .then(({ result, error }) => this.show(result, error))
+        .then((data) => {
+          const { result, error } = data || {}
+          this.show(result, error)
+        })
         .catch(() => this.show(null, 'offline'))
+        .then(done, done)
     },
 
     show(buses, error) {
+      if (this.state.destroyed) return
       const w = this.state.w
       if (error === 'offline') {
         this.showStatus('Sem conexão', 'Abra o app Zepp no celular e deixe o Bluetooth ligado.', COLOR_ERROR)
@@ -198,7 +215,9 @@ Page(
     },
 
     onDestroy() {
-      if (this.state.timer) clearInterval(this.state.timer)
+      this.state.destroyed = true
+      if (this.state.timer) clearTimeout(this.state.timer)
+      this.state.timer = null
       this.stopDots()
     }
   })

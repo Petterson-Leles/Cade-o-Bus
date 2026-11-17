@@ -24,7 +24,11 @@ const ROW_GAP = px(16)
 
 Page(
   BasePage({
-    state: { widgets: [] },
+    onInit() {
+      // Estado próprio de cada abertura da página (não reaproveita o objeto do módulo).
+      // Mantém o que a zml já colocou em this.state (ex.: messaging).
+      this.state = { ...this.state, widgets: [] }
+    },
 
     build() {
       hmUI.createWidget(hmUI.widget.TEXT, {
@@ -49,8 +53,9 @@ Page(
     },
 
     // Chamado quando você muda os favoritos no celular.
-    onCall({ result }) {
-      this.render(result || [])
+    onCall(data) {
+      if (!data || data.method !== 'FAVORITES_CHANGED') return
+      this.render(Array.isArray(data.result) ? data.result : [])
     },
 
     clear() {
@@ -148,6 +153,8 @@ Page(
           click_func: () => push({ url: 'page/detail/index.page', params: JSON.stringify(fav) })
         })
       })
+      // A página rola sozinha quando os botões passam da altura da tela
+      // (SCROLL_MODE_FREE é o padrão do Zepp OS).
       // Espaço no fim para o último botão poder rolar até o meio da tela redonda.
       this.add(hmUI.widget.FILL_RECT, {
         x: 0,
