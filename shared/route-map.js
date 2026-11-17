@@ -2,6 +2,9 @@
 // projeção local, posição do ônibus ao longo do trajeto e recorte do mini mapa.
 // O side service usa isso e manda ao relógio só pontos já em pixels.
 import { simplifyXY } from './polyline.js'
+import { MAP_BUS_MAX_R, TRAIL_M, TRAIL_SPACING_PX, MAX_TRAIL_DOTS, dotsAlong } from './map-frame.js'
+
+export { MAP_BUS_MAX_R }
 
 // Metros por grau (aproximação esférica, boa para alguns km).
 export const M_PER_DEG = 111320
@@ -10,8 +13,6 @@ export const MAP_RADIUS_M = 750
 export const MAP_PX_PER_KM = 128
 // Raio útil do mapa em pixels de design (750 m * 128 px/km = 96 px).
 export const MAP_RADIUS_PX = Math.round((MAP_RADIUS_M / 1000) * MAP_PX_PER_KM)
-// Centro do ícone do ônibus (48 px) até no máximo isso do centro, para caber no anel (raio 104).
-export const MAP_BUS_MAX_R = 80
 // Ônibus a mais que isso do trajeto é tratado como fora da rota (linha reta).
 export const MAX_OFF_ROUTE_M = 150
 // Tolerância para considerar que o ônibus "já passou" do ponto (GPS impreciso).
@@ -250,10 +251,17 @@ export function pixelPosition(project, lat, lon, pxPerM, maxR) {
 }
 
 // Tudo o que o relógio desenha no mini mapa, em pixels de design relativos ao
-// centro do mapa (o ponto do usuário):
-//   { r, route: [[x, y, ...]], hi: [[x, y, ...]], stops: [x, y, ...], buses: [{ x, y, clamped }] }
-// - route: trajeto recortado ao círculo; hi: trecho do 1º ônibus até o ponto;
-// - stops: outros pontos da linha dentro do círculo; buses: na mesma ordem de `buses`.
+// centro do mapa:
+//   { r, k, stop: { x, y }, route: [[x, y, ...]], hi: [[x, y, ...]], trail: [x, y, ...],
+//     stops: [x, y, ...], buses: [{ x, y, clamped }], passed?: { x, y, clamped, vehicle, at } }
+// - center: centro do mapa em metros na projeção do ponto (padrão: o próprio ponto);
+//   pxPerKm: escala (ver chooseFrame em map-frame.js); radiusM: raio do recorte.
+// - route: trajeto recortado ao círculo; hi: trecho do 1º ônibus até o ponto,
+//   saindo exatamente de onde o ícone do ônibus é desenhado;
+// - trail: bolinhas sobre o trajeto já percorrido pelo 1º ônibus (até trailM atrás dele);
+// - stops: outros pontos da linha dentro do círculo; buses: na mesma ordem de `buses`
+//   (no trajeto quando o ônibus está nele, senão a posição do GPS);
+// - passed: ônibus que acabou de passar do ponto ({ lat, lon, along?, vehicle, at }).
 // ctx vem de routeContext (pode ser null: só os ônibus em linha reta).
 // buses: [{ lat, lon, route?: saída de busOnRoute }]; lineStops: [{ lat, lon, id }].
 export function buildMapPayload({
@@ -263,18 +271,27 @@ export function buildMapPayload({
   lineStops = [],
   radiusM = MAP_RADIUS_M,
   pxPerKm = MAP_PX_PER_KM,
+  center = null,
   busMaxR,
-  maxStops = MAX_MAP_STOPS
+  maxStops = MAX_MAP_STOPS,
+  trailM = TRAIL_M,
+  passed = null
 }) {
   const pxPerM = pxPerKm / 1000
   const r = Math.round(radiusM * pxPerM)
   const project = ctx ? ctx.project : stop ? makeProjection(stop) : null
-  const payload = { r, route: [], hi: [], stops: [], buses: [] }
+  const cx = center && Number.isFinite(center[0]) ? center[0] : 0
+  const cy = center && Number.isFinite(center[1]) ? center[1] : 0
+  const payload = { r, k: Math.round(pxPerKm), stop: { x: Math.round(-cx * pxPerM) || 0, y: Math.round(-cy * pxPerM) || 0 }, route: [], hi: [], trail: [], stops: [], buses: [] }
   if (!project) return payload
+  // Metros (projeção do ponto) -> metros relativos ao centro do mapa.
+  const shift = (pts) => pts.map((p) => [p[0] - cx, p[1] - cy])
+  const clip = (pts) => toPixelPieces(clipToCircle(shift(pts), radiusM), pxPerM)
+  const onRoute = (b) => ctx && ctx.pts.length >= 2 && b && b.route && !b.route.passed && Number.isFinite(b.route.along)
   if (ctx && ctx.pts.length >= 2) {
-    payload.route = toPixelPieces(clipToCircle(ctx.pts, radiusM), pxPerM)
+    payload.route = clip(ctx.pts)
     const first = buses[0] && buses[0].route
-    if (first && !first.passed && ctx.stopAlong !== null) {
+    if (onRoute(buses[0]) && ctx.stopAlong !== null) {
       let parts
       if (first.along <= ctx.stopAlong + PASSED_TOLERANCE_M) {
         parts = [subPolyline(ctx.pts, ctx.cum, first.along, ctx.stopAlong)]
@@ -283,8 +300,16 @@ export function buildMapPayload({
         parts = [subPolyline(ctx.pts, ctx.cum, first.along, ctx.total), subPolyline(ctx.pts, ctx.cum, 0, ctx.stopAlong)]
       }
       parts.forEach((part) => {
-        payload.hi.push(...toPixelPieces(clipToCircle(part, radiusM), pxPerM))
+        payload.hi.push(...clip(part))
       })
+      // Rastro: trajeto já percorrido, parado no mapa (não segue o ícone).
+      const back = subPolyline(ctx.pts, ctx.cum, Math.max(0, first.along - trailM), first.along)
+      const pieces = clipToCircle(shift(back), radiusM).map((piece) => piece.map((p) => [p[0] * pxPerM, p[1] * pxPerM]))
+      payload.trail = dotsAlong(
+        pieces.map((piece) => piece.reduce((flat, p) => flat.concat(p), [])),
+        TRAIL_SPACING_PX,
+        MAX_TRAIL_DOTS
+      )
     }
   }
   const stopId = stop && stop.id !== undefined ? String(stop.id) : null
@@ -292,14 +317,35 @@ export function buildMapPayload({
     const s = lineStops[i]
     if (stopId !== null && String(s.id) === stopId) continue
     const [mx, my] = project(s.lat, s.lon)
-    if (!(Math.hypot(mx, my) <= radiusM)) continue
-    const x = Math.round(mx * pxPerM) || 0
-    const y = Math.round(my * pxPerM) || 0
-    if (x === 0 && y === 0) continue // em cima do ponto do usuário
-    payload.stops.push(x, y)
+    if (!(Math.hypot(mx - cx, my - cy) <= radiusM)) continue
+    if (Math.hypot(mx, my) * pxPerM < 1) continue // em cima do ponto do usuário
+    payload.stops.push(Math.round((mx - cx) * pxPerM) || 0, Math.round((my - cy) * pxPerM) || 0)
   }
   const maxR = busMaxR === undefined ? r : busMaxR
-  payload.buses = buses.map((b) => pixelPosition(project, b.lat, b.lon, pxPerM, maxR))
+  // Posição em pixels (presa ao raio maxR) de um ponto em metros.
+  const place = (m) => {
+    if (!m || !Number.isFinite(m[0]) || !Number.isFinite(m[1])) return null
+    let x = (m[0] - cx) * pxPerM
+    let y = (m[1] - cy) * pxPerM
+    const d = Math.hypot(x, y)
+    const clamped = d > maxR
+    if (clamped) {
+      x = (x / d) * maxR
+      y = (y / d) * maxR
+    }
+    return { x: Math.round(x) || 0, y: Math.round(y) || 0, clamped }
+  }
+  const metersOf = (b, along) => {
+    if (ctx && ctx.pts.length >= 2 && Number.isFinite(along)) return pointAt(ctx.pts, ctx.cum, along)
+    const lat = toNum(b.lat)
+    const lon = toNum(b.lon)
+    return Number.isFinite(lat) && Number.isFinite(lon) ? project(lat, lon) : null
+  }
+  payload.buses = buses.map((b) => (b ? place(metersOf(b, onRoute(b) ? b.route.along : NaN)) : null))
+  if (passed) {
+    const pos = place(metersOf(passed, toNum(passed.along)))
+    if (pos) payload.passed = { ...pos, vehicle: String(passed.vehicle || '').slice(0, 12), at: Number(passed.at) || 0 }
+  }
   return payload
 }
 
@@ -310,16 +356,25 @@ export function sanitizeMapPayload(map, limit = 200) {
   const okNum = (n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= limit
   const flat = (a) => (Array.isArray(a) && a.length % 2 === 0 && a.every(okNum) ? a.map(Math.round) : null)
   const pieces = (list) => (Array.isArray(list) ? list.map(flat).filter((a) => a && a.length >= 4) : [])
-  return {
+  const point = (b) => (b && okNum(b.x) && okNum(b.y) ? { x: Math.round(b.x), y: Math.round(b.y), clamped: !!b.clamped } : null)
+  const out = {
     r: okNum(map.r) ? Math.round(map.r) : null,
+    k: typeof map.k === 'number' && map.k >= 1 && map.k <= 1000 ? Math.round(map.k) : null,
+    auto: map.auto !== false,
     speed: typeof map.speed === 'number' && map.speed > 0 && map.speed < 20 ? map.speed : 0,
+    stop: point(map.stop) || { x: 0, y: 0, clamped: false },
     route: pieces(map.route),
     hi: pieces(map.hi),
+    trail: (flat(map.trail) || []).slice(0, 400),
     stops: flat(map.stops) || [],
-    buses: Array.isArray(map.buses)
-      ? map.buses.map((b) => (b && okNum(b.x) && okNum(b.y) ? { x: Math.round(b.x), y: Math.round(b.y), clamped: !!b.clamped } : null))
-      : []
+    buses: Array.isArray(map.buses) ? map.buses.map(point) : [],
+    passed: null
   }
+  const p = point(map.passed)
+  if (p && typeof map.passed.vehicle === 'string' && typeof map.passed.at === 'number' && Number.isFinite(map.passed.at)) {
+    out.passed = { ...p, vehicle: map.passed.vehicle.slice(0, 12), at: map.passed.at }
+  }
+  return out
 }
 
 // ---- Animação do ônibus no relógio (entre as atualizações de 30 s) ----
