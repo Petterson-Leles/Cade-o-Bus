@@ -89,7 +89,7 @@ Page(
       w.others = []
       for (let i = 0; i < MAX_OTHERS; i++) {
         w.others.push(
-          this.text({ ...box(px(90)), y: px(344) + i * px(34), h: px(34), text_size: px(26), color: COLOR_TEXT })
+          this.text({ ...box(px(90)), y: px(342) + i * px(30), h: px(30), text_size: px(26), color: COLOR_TEXT })
         )
       }
 
@@ -105,7 +105,8 @@ Page(
         text_style: hmUI.text_style.WRAP
       })
 
-      w.footer = this.text({ ...box(px(120)), y: px(414), h: px(30), text_size: px(20), color: COLOR_MUTED })
+      // Rodapé: em y 404-432 a tela redonda tem ~288 px visíveis; a caixa tem 280.
+      w.footer = this.text({ ...box(px(100)), y: px(404), h: px(28), text_size: px(20), color: COLOR_MUTED })
 
       if (!this.state.fav) {
         this.showStatus('Ponto inválido', 'Volte e escolha o ponto de novo.', COLOR_ERROR)
@@ -211,7 +212,7 @@ Page(
         if (b) t.setProperty(hmUI.prop.TEXT, `${b.etaMin} min · ${formatDistance(b.distanceM)}`)
       })
 
-      w.footer.setProperty(hmUI.prop.TEXT, `Atualizado ${clock()} · estimativa`)
+      w.footer.setProperty(hmUI.prop.TEXT, `Atualizado ${clock()}`)
     },
 
     onDestroy() {
