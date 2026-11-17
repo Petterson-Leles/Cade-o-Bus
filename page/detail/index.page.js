@@ -1,16 +1,46 @@
-// Tela de um ponto: mostra os ônibus da linha mais próximos e atualiza a cada 30 s.
+// Tela de um ponto: destaca o ônibus mais próximo e lista os seguintes. Atualiza a cada 30 s.
 import * as hmUI from '@zos/ui'
 import { px } from '@zos/utils'
 import { BasePage } from '@zeppos/zml/base-page'
 import { formatDistance } from '../../shared/bhtrans'
-import { DEVICE_WIDTH, COLOR_PRIMARY, COLOR_TEXT, COLOR_MUTED } from '../../utils/ui'
+import {
+  DEVICE_WIDTH,
+  COLOR_PRIMARY,
+  COLOR_TEXT,
+  COLOR_MUTED,
+  COLOR_DIVIDER,
+  COLOR_ERROR
+} from '../../utils/ui'
 
 const REFRESH_MS = 30 * 1000
-const MARGIN = px(50)
+const DOTS_MS = 500
+const MAX_OTHERS = 2
+// Posição do GPS mais velha que isso ganha aviso.
+const STALE_SEC = 120
+
+// Largura centralizada que cabe na tela redonda a partir de uma margem lateral.
+const box = (margin) => ({ x: margin, w: DEVICE_WIDTH - 2 * margin })
+
+function clock() {
+  const d = new Date()
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+function ageText(sec) {
+  if (sec === null || sec === undefined) return ''
+  if (sec < 60) return `GPS há ${sec} s`
+  return `GPS há ${Math.round(sec / 60)} min`
+}
 
 Page(
   BasePage({
-    state: { fav: null, timer: null, title: null, body: null, footer: null },
+    state: {
+      fav: null,
+      timer: null,
+      dotsTimer: null,
+      hasData: false,
+      w: {}
+    },
 
     onInit(params) {
       try {
@@ -20,70 +50,156 @@ Page(
       }
     },
 
+    text(opts) {
+      return hmUI.createWidget(hmUI.widget.TEXT, {
+        align_h: hmUI.align.CENTER_H,
+        align_v: hmUI.align.CENTER_V,
+        text_style: hmUI.text_style.ELLIPSIS,
+        text: '',
+        ...opts
+      })
+    },
+
     build() {
       const fav = this.state.fav || { name: '?', line: '?' }
-      this.state.title = hmUI.createWidget(hmUI.widget.TEXT, {
-        x: MARGIN,
-        y: px(50),
-        w: DEVICE_WIDTH - 2 * MARGIN,
-        h: px(90),
-        text: `Linha ${fav.line}\n${fav.name}`,
-        text_size: px(30),
-        color: COLOR_PRIMARY,
-        align_h: hmUI.align.CENTER_H,
-        text_style: hmUI.text_style.WRAP
+      const w = this.state.w
+
+      // Cabeçalho: linha em destaque, nome do ponto em cinza.
+      this.text({ ...box(px(100)), y: px(40), h: px(40), text: `Linha ${fav.line}`, text_size: px(28), color: COLOR_PRIMARY })
+      this.text({ ...box(px(80)), y: px(80), h: px(34), text: fav.name, text_size: px(24), color: COLOR_MUTED })
+
+      // Ônibus mais próximo: número grande para ler em 1 segundo.
+      w.eta = this.text({ ...box(px(60)), y: px(118), h: px(140), text_size: px(124), color: COLOR_PRIMARY })
+      w.etaSub = this.text({ ...box(px(60)), y: px(256), h: px(40), text_size: px(30), color: COLOR_TEXT })
+      w.etaAge = this.text({ ...box(px(70)), y: px(296), h: px(30), text_size: px(22), color: COLOR_MUTED })
+
+      // Próximos ônibus.
+      w.divider = hmUI.createWidget(hmUI.widget.FILL_RECT, {
+        x: px(150),
+        y: px(336),
+        w: DEVICE_WIDTH - 2 * px(150),
+        h: px(2),
+        radius: px(1),
+        color: COLOR_DIVIDER
       })
-      this.state.body = hmUI.createWidget(hmUI.widget.TEXT, {
-        x: MARGIN,
-        y: px(150),
-        w: DEVICE_WIDTH - 2 * MARGIN,
-        h: px(220),
-        text: 'Procurando ônibus...',
-        text_size: px(32),
-        color: COLOR_TEXT,
-        align_h: hmUI.align.CENTER_H,
-        text_style: hmUI.text_style.WRAP
-      })
-      this.state.footer = hmUI.createWidget(hmUI.widget.TEXT, {
-        x: MARGIN,
-        y: px(380),
-        w: DEVICE_WIDTH - 2 * MARGIN,
-        h: px(50),
-        text: '',
-        text_size: px(22),
-        color: COLOR_MUTED,
-        align_h: hmUI.align.CENTER_H
-      })
-      if (this.state.fav) {
-        this.refresh()
-        this.state.timer = setInterval(() => this.refresh(), REFRESH_MS)
+      w.others = []
+      for (let i = 0; i < MAX_OTHERS; i++) {
+        w.others.push(
+          this.text({ ...box(px(90)), y: px(344) + i * px(34), h: px(34), text_size: px(26), color: COLOR_TEXT })
+        )
       }
+
+      // Estados sem dados (carregando, vazio, erro): título + detalhe.
+      w.statusTitle = this.text({ ...box(px(60)), y: px(160), h: px(56), text_size: px(36), color: COLOR_TEXT })
+      w.statusDetail = this.text({
+        ...box(px(70)),
+        y: px(220),
+        h: px(110),
+        text_size: px(26),
+        color: COLOR_MUTED,
+        align_v: hmUI.align.TOP,
+        text_style: hmUI.text_style.WRAP
+      })
+
+      w.footer = this.text({ ...box(px(120)), y: px(414), h: px(30), text_size: px(20), color: COLOR_MUTED })
+
+      if (!this.state.fav) {
+        this.showStatus('Ponto inválido', 'Volte e escolha o ponto de novo.', COLOR_ERROR)
+        return
+      }
+      this.showLoading()
+      this.refresh()
+      this.state.timer = setInterval(() => this.refresh(), REFRESH_MS)
+    },
+
+    setVisible(widgets, visible) {
+      widgets.forEach((x) => x.setProperty(hmUI.prop.VISIBLE, visible))
+    },
+
+    dataWidgets() {
+      const w = this.state.w
+      return [w.eta, w.etaSub, w.etaAge, w.divider, ...w.others]
+    },
+
+    stopDots() {
+      if (this.state.dotsTimer) clearInterval(this.state.dotsTimer)
+      this.state.dotsTimer = null
+    },
+
+    // Carregando: pontinhos animados para mostrar que o app está trabalhando.
+    showLoading() {
+      this.showStatus('Procurando ônibus', 'Consultando a BHTrans pelo celular', COLOR_TEXT)
+      let n = 0
+      this.state.dotsTimer = setInterval(() => {
+        n = (n + 1) % 4
+        this.state.w.statusTitle.setProperty(hmUI.prop.TEXT, 'Procurando ônibus' + '.'.repeat(n))
+      }, DOTS_MS)
+    },
+
+    showStatus(title, detail, color) {
+      const w = this.state.w
+      this.stopDots()
+      this.state.hasData = false
+      this.setVisible(this.dataWidgets(), false)
+      this.setVisible([w.statusTitle, w.statusDetail], true)
+      w.statusTitle.setProperty(hmUI.prop.TEXT, title)
+      w.statusTitle.setProperty(hmUI.prop.COLOR, color)
+      w.statusDetail.setProperty(hmUI.prop.TEXT, detail || '')
     },
 
     refresh() {
       const { line, lat, lon } = this.state.fav
+      // Com dados na tela, só avisa no rodapé em vez de apagar tudo.
+      if (this.state.hasData) this.state.w.footer.setProperty(hmUI.prop.TEXT, 'Atualizando...')
       this.request({ method: 'GET_BUSES', params: { line, lat, lon } })
         .then(({ result, error }) => this.show(result, error))
-        .catch(() => this.show(null, 'Sem conexão com o celular'))
+        .catch(() => this.show(null, 'offline'))
     },
 
     show(buses, error) {
-      let text
-      if (error) text = error
-      else if (!buses || buses.length === 0) text = 'Nenhum ônibus dessa linha em circulação agora'
-      else
-        text = buses
-          .map((b) => `${b.etaMin} min · ${formatDistance(b.distanceM)}`)
-          .join('\n')
-      this.state.body.setProperty(hmUI.prop.TEXT, text)
-      const d = new Date()
-      const hh = String(d.getHours()).padStart(2, '0')
-      const mm = String(d.getMinutes()).padStart(2, '0')
-      this.state.footer.setProperty(hmUI.prop.TEXT, `Atualizado ${hh}:${mm} · estimativa`)
+      const w = this.state.w
+      if (error === 'offline') {
+        this.showStatus('Sem conexão', 'Abra o app Zepp no celular e deixe o Bluetooth ligado.', COLOR_ERROR)
+        w.footer.setProperty(hmUI.prop.TEXT, 'Nova tentativa em 30 s')
+        return
+      }
+      if (error) {
+        this.showStatus('Erro', error, COLOR_ERROR)
+        w.footer.setProperty(hmUI.prop.TEXT, 'Nova tentativa em 30 s')
+        return
+      }
+      if (!buses || buses.length === 0) {
+        this.showStatus('Nenhum ônibus', 'Essa linha não tem ônibus circulando agora.', COLOR_TEXT)
+        w.footer.setProperty(hmUI.prop.TEXT, `Atualizado ${clock()}`)
+        return
+      }
+
+      const [first, ...rest] = buses
+      this.stopDots()
+      this.state.hasData = true
+      this.setVisible([w.statusTitle, w.statusDetail], false)
+      this.setVisible([w.eta, w.etaSub, w.etaAge], true)
+
+      w.eta.setProperty(hmUI.prop.TEXT, String(first.etaMin))
+      w.etaSub.setProperty(hmUI.prop.TEXT, `min · ${formatDistance(first.distanceM)}`)
+      const stale = first.ageSec !== null && first.ageSec !== undefined && first.ageSec >= STALE_SEC
+      w.etaAge.setProperty(hmUI.prop.TEXT, stale ? ageText(first.ageSec) : `Ônibus ${first.vehicle}`)
+      w.etaAge.setProperty(hmUI.prop.COLOR, stale ? COLOR_ERROR : COLOR_MUTED)
+
+      const others = rest.slice(0, MAX_OTHERS)
+      w.divider.setProperty(hmUI.prop.VISIBLE, others.length > 0)
+      w.others.forEach((t, i) => {
+        const b = others[i]
+        t.setProperty(hmUI.prop.VISIBLE, !!b)
+        if (b) t.setProperty(hmUI.prop.TEXT, `${b.etaMin} min · ${formatDistance(b.distanceM)}`)
+      })
+
+      w.footer.setProperty(hmUI.prop.TEXT, `Atualizado ${clock()} · estimativa`)
     },
 
     onDestroy() {
       if (this.state.timer) clearInterval(this.state.timer)
+      this.stopDots()
     }
   })
 )
