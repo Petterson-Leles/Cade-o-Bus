@@ -1,9 +1,16 @@
 // Lógica do formulário de configurações (sem APIs do Zepp OS), testada em test/settings-form.test.mjs.
+//
+// Dois jeitos de cadastrar um ponto:
+// - pela lista (padrão): número da linha -> sentido (headsign) -> ponto da linha,
+//   tudo do pacote GTFS (data/gtfs-index.js). Guarda line, dir, stopId, name, lat, lon.
+// - avançado (draft.manual): nome, linha, latitude e longitude digitados.
 import { MAX_TEXT_LEN } from '../utils/favorites.js'
+import { findLine, lineStops, stopById, normalizeLineNumber, searchLines } from './gtfs.js'
 
+// Campos do modo avançado (manual).
 export const DRAFT_FIELDS = [
   { key: 'name', label: 'Nome do ponto', placeholder: 'Ex.: Casa' },
-  { key: 'line', label: 'Código da linha BHTrans (campo NL)', placeholder: 'Ex.: 1234' },
+  { key: 'line', label: 'Número da linha', placeholder: 'Ex.: 9250' },
   { key: 'lat', label: 'Latitude do ponto', placeholder: 'Ex.: -19.9191 (ou cole "lat, lon")' },
   { key: 'lon', label: 'Longitude do ponto', placeholder: 'Ex.: -43.9386' }
 ]
@@ -79,23 +86,123 @@ export function validate(draft) {
   return errors
 }
 
-// Aplica a edição de um campo ao rascunho. Colar "lat, lon" no campo de latitude
-// (ou de longitude) preenche os dois.
-export function applyDraftChange(draft, key, value) {
-  const text = String(value === undefined || value === null ? '' : value).trim()
-  if (key === 'lat' || key === 'lon') {
-    const pair = splitLatLon(text)
-    if (pair) return { ...draft, lat: pair.lat, lon: pair.lon }
-  }
-  return { ...draft, [key]: text }
+// Valor que o Select devolve: texto, número ou { value }.
+export function selectValue(value) {
+  const v = value && typeof value === 'object' && !Array.isArray(value) ? value.value : value
+  return v === undefined || v === null ? '' : String(v).trim()
 }
 
-export function buildFavorite(draft, id) {
+// Aplica a edição de um campo ao rascunho. Colar "lat, lon" no campo de latitude
+// (ou de longitude) preenche os dois. Trocar a linha limpa sentido e ponto;
+// trocar o sentido limpa o ponto.
+export function applyDraftChange(draft, key, value) {
+  const base = draft && typeof draft === 'object' ? draft : {}
+  if (key === 'manual') return { ...base, manual: value === true }
+  const text = key === 'dir' || key === 'stopId' ? selectValue(value) : String(value === undefined || value === null ? '' : value).trim()
+  if (key === 'lat' || key === 'lon') {
+    const pair = splitLatLon(text)
+    if (pair) return { ...base, lat: pair.lat, lon: pair.lon }
+  }
+  if (key === 'line') {
+    const next = { ...base, line: text }
+    if (normalizeLineNumber(text) !== normalizeLineNumber(base.line)) {
+      delete next.dir
+      delete next.stopId
+    }
+    return next
+  }
+  if (key === 'dir') {
+    const next = { ...base, dir: text }
+    if (text !== String(base.dir === undefined ? '' : base.dir)) delete next.stopId
+    return next
+  }
+  return { ...base, [key]: text }
+}
+
+// Sentido válido do rascunho (0/1) ou null.
+function draftDir(draft) {
+  const t = String(draft && draft.dir !== undefined && draft.dir !== null ? draft.dir : '').trim()
+  return t === '0' || t === '1' ? Number(t) : null
+}
+
+// O que a tela mostra para o rascunho atual (modo lista):
+// { line, suggestions, dirOptions, dir, stopOptions, stop }.
+// Com um sentido só, ele já vem escolhido.
+export function draftChoices(draft, index) {
+  const d = draft || {}
+  const out = { line: null, suggestions: [], dirOptions: [], dir: null, stopOptions: [], stop: null }
+  const typed = normalizeLineNumber(d.line)
+  if (!typed) return out
+  const line = findLine(index, typed)
+  if (!line) {
+    out.suggestions = searchLines(index, typed, 6)
+    return out
+  }
+  out.line = line
+  out.dirOptions = line.dirs.map((x) => ({ name: `Sentido ${x.headsign || x.dir}`, value: String(x.dir) }))
+  let dir = draftDir(d)
+  if (dir === null && line.dirs.length === 1) dir = line.dirs[0].dir
+  if (dir === null || !line.dirs.some((x) => x.dir === dir)) return out
+  out.dir = dir
+  const stops = lineStops(index, line.number, dir)
+  out.stopOptions = stops.map((st) => ({ name: `${st.seq}. ${st.name}`, value: st.id }))
+  const wanted = String(d.stopId || '').trim()
+  out.stop = stops.find((st) => st.id === wanted) || null
+  return out
+}
+
+// Problemas do rascunho (vazia = pode salvar). Sem índice ou no modo avançado,
+// vale a validação manual (validate).
+export function validateDraft(draft, index) {
+  const d = draft || {}
+  if (d.manual || !index) {
+    const errors = validate(d)
+    const dirText = String(d.dir === undefined || d.dir === null ? '' : d.dir).trim()
+    if (dirText && draftDir(d) === null) errors.push('Sentido inválido.')
+    return errors
+  }
+  const errors = []
+  const typed = normalizeLineNumber(d.line)
+  if (!typed) return ['Preencha "Número da linha".']
+  if (String(d.name || '').trim().length > MAX_TEXT_LEN) {
+    errors.push(`"Nome do ponto" pode ter no máximo ${MAX_TEXT_LEN} caracteres.`)
+  }
+  const c = draftChoices(d, index)
+  if (!c.line) {
+    errors.push(`Linha ${typed} não encontrada na lista de linhas de BH. Confira o número ou use a opção avançada.`)
+    return errors
+  }
+  if (c.dir === null) errors.push('Escolha o sentido.')
+  else if (!c.stop) errors.push('Escolha o ponto na lista.')
+  return errors
+}
+
+// Rascunho válido -> favorito { id, name, line, lat, lon, dir?, stopId? }.
+// Sem índice ou no modo avançado: os campos digitados (o sentido vai junto se escolhido).
+export function buildFavorite(draft, id, index) {
+  const d = draft || {}
+  if (d.manual || !index) {
+    const fav = {
+      id,
+      name: String(d.name).trim(),
+      line: String(d.line).trim(),
+      lat: String(toCoord(d.lat)),
+      lon: String(toCoord(d.lon))
+    }
+    const dir = draftDir(d)
+    if (dir !== null) fav.dir = dir
+    return fav
+  }
+  const c = draftChoices(d, index)
+  const stop = c.stop || stopById(index, d.stopId)
+  const name = String(d.name || '').trim() || stop.name
   return {
     id,
-    name: String(draft.name).trim(),
-    line: String(draft.line).trim(),
-    lat: String(toCoord(draft.lat)),
-    lon: String(toCoord(draft.lon))
+    name: name.slice(0, MAX_TEXT_LEN).trim(),
+    line: c.line.number,
+    dir: c.dir,
+    stopId: stop.id,
+    lat: String(stop.lat),
+    lon: String(stop.lon)
   }
 }

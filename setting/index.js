@@ -1,7 +1,19 @@
 // Tela de configurações (abre no app Zepp do celular): tema do relógio e pontos favoritos.
+// A lista de linhas e pontos vem do pacote GTFS embutido (data/gtfs-index.js):
+// a tela de configurações é um bundle JS comum (ES6, sem eval), então importa
+// o pacote direto, sem depender do side service estar rodando.
 import { readFavorites, writeFavorites, newFavoriteId, removeFavorite } from '../utils/favorites'
 import { CSS, readThemeName, writeThemeName } from '../utils/colors'
-import { DRAFT_FIELDS, readJson, validate, applyDraftChange, buildFavorite } from '../shared/settings-form'
+import {
+  DRAFT_FIELDS,
+  readJson,
+  validateDraft,
+  applyDraftChange,
+  buildFavorite,
+  draftChoices
+} from '../shared/settings-form'
+import { findLine, lineStops } from '../shared/gtfs'
+import GTFS_INDEX from '../data/gtfs-index'
 
 const DRAFT_KEY = 'draft'
 const MESSAGE_KEY = 'formMessage'
@@ -44,6 +56,19 @@ function themePicker(storage) {
   )
 }
 
+const hint = (text) => Text({ paragraph: true, style: { fontSize: '12px', color: CSS.muted, marginTop: '6px' } }, text)
+
+// "Linha 9250 · sentido Nova Cintra" para a lista de salvos.
+function favoriteSubtitle(fav) {
+  const line = findLine(GTFS_INDEX, fav.line)
+  const dir = line && fav.dir !== undefined ? line.dirs.find((d) => d.dir === fav.dir) : null
+  if (dir && fav.stopId) {
+    const stop = lineStops(GTFS_INDEX, fav.line, fav.dir).find((st) => st.id === fav.stopId)
+    return `Linha ${fav.line} → ${dir.headsign}${stop ? ` · ${stop.name}` : ''}`
+  }
+  return `Linha ${fav.line}${dir ? ` → ${dir.headsign}` : ''} · ${fav.lat}, ${fav.lon}`
+}
+
 function messageBox(message) {
   if (!message || !message.text) return null
   const ok = message.type === 'success'
@@ -71,34 +96,63 @@ AppSettingsPage({
 
     const setMessage = (type, text) => storage.setItem(MESSAGE_KEY, JSON.stringify({ type, text }))
 
-    const inputs = DRAFT_FIELDS.map((f) =>
+    // Relê o rascunho na hora: as variáveis do build podem estar velhas.
+    const change = (key, val) => {
+      const current = readJson(storage, DRAFT_KEY, {})
+      storage.setItem(DRAFT_KEY, JSON.stringify(applyDraftChange(current, key, val)))
+      // Ao editar, some a mensagem antiga.
+      if (storage.getItem(MESSAGE_KEY)) storage.removeItem(MESSAGE_KEY)
+    }
+    const input = (key, label, placeholder) =>
       TextInput({
-        label: f.label,
-        placeholder: f.placeholder,
-        value: draft[f.key] || '',
+        label,
+        placeholder,
+        value: draft[key] || '',
         labelStyle: { fontSize: '14px', color: CSS.text },
         subStyle: { fontSize: '16px', color: CSS.text },
-        onChange: (val) => {
-          // Relê o rascunho na hora: as variáveis do build podem estar velhas.
-          const current = readJson(storage, DRAFT_KEY, {})
-          storage.setItem(DRAFT_KEY, JSON.stringify(applyDraftChange(current, f.key, val)))
-          // Ao editar, some a mensagem antiga.
-          if (storage.getItem(MESSAGE_KEY)) storage.removeItem(MESSAGE_KEY)
-        }
+        onChange: (val) => change(key, val)
       })
-    )
+    const select = (key, label, options, value) =>
+      Select({ label, title: label, options, value, onChange: (val) => change(key, val) })
+
+    // Modo lista: linha -> sentido -> ponto.
+    const choices = draftChoices(draft, GTFS_INDEX)
+    const pick = []
+    pick.push(input('line', 'Número da linha', 'Ex.: 9250'))
+    if (draft.line && !choices.line) {
+      const sug = choices.suggestions.map((l) => l.number).join(', ')
+      pick.push(hint(sug ? `Não achei essa linha. Você quis dizer: ${sug}?` : 'Não achei essa linha na lista de BH.'))
+    }
+    if (choices.line) {
+      pick.push(Text({ paragraph: true, style: { fontSize: '14px', color: CSS.text, marginTop: '6px' } }, `${choices.line.number} · ${choices.line.name}`))
+      pick.push(select('dir', 'Sentido', choices.dirOptions, choices.dir === null ? '' : String(choices.dir)))
+    }
+    if (choices.dir !== null && !draft.manual) {
+      pick.push(select('stopId', 'Ponto', choices.stopOptions, choices.stop ? choices.stop.id : ''))
+      if (choices.stop) pick.push(hint(`Ponto ${choices.stop.id}: ${choices.stop.lat.toFixed(5)}, ${choices.stop.lon.toFixed(5)}`))
+    }
+    pick.push(input('name', 'Nome do ponto (opcional)', choices.stop ? `Ex.: ${choices.stop.name}` : 'Ex.: Casa'))
+
+    // Avançado: latitude e longitude digitadas (vale também para linhas fora da lista).
+    const manual = [
+      Toggle({ label: 'Avançado: digitar latitude e longitude', value: !!draft.manual, onChange: (val) => change('manual', val) })
+    ]
+    if (draft.manual) {
+      DRAFT_FIELDS.filter((f) => f.key === 'lat' || f.key === 'lon').forEach((f) => manual.push(input(f.key, f.label, f.placeholder)))
+      manual.push(hint('Dica: no Google Maps, toque e segure no ponto para copiar a latitude e a longitude. No modo avançado o nome é obrigatório e a linha pode ser qualquer código.'))
+    }
 
     const addButton = Button({
       label: 'Adicionar ponto',
       style: buttonStyle(CSS.primary, CSS.primaryText),
       onClick: () => {
         const current = readJson(storage, DRAFT_KEY, {})
-        const errors = validate(current)
+        const errors = validateDraft(current, GTFS_INDEX)
         if (errors.length > 0) {
           setMessage('error', errors.join('\n'))
           return
         }
-        const fav = buildFavorite(current, newFavoriteId())
+        const fav = buildFavorite(current, newFavoriteId(), GTFS_INDEX)
         writeFavorites(storage, [...readFavorites(storage), fav])
         storage.setItem(DRAFT_KEY, '{}')
         setMessage('success', `Ponto "${fav.name}" salvo. Ele já aparece no relógio.`)
@@ -124,7 +178,7 @@ AppSettingsPage({
                   Text({ bold: true, style: { fontSize: '16px', color: CSS.text } }, fav.name),
                   Text(
                     { style: { fontSize: '13px', color: CSS.muted } },
-                    `Linha ${fav.line} · ${fav.lat}, ${fav.lon}`
+                    favoriteSubtitle(fav)
                   )
                 ]),
                 Button({
@@ -150,7 +204,7 @@ AppSettingsPage({
       ),
       Text(
         { paragraph: true, style: { fontSize: '14px', color: CSS.muted } },
-        'Uai, é só cadastrar os pontos de ônibus que você usa. Eles aparecem na tela inicial do relógio.'
+        'Uai, é só digitar o número da linha, escolher o sentido e o ponto. Eles aparecem na tela inicial do relógio.'
       ),
       Section({ title: 'Tema do relógio', style: { marginTop: '12px' } }, [
         themePicker(storage),
@@ -160,11 +214,8 @@ AppSettingsPage({
         )
       ]),
       Section({ title: 'Novo ponto', style: { marginTop: '12px' } }, [
-        ...inputs,
-        Text(
-          { paragraph: true, style: { fontSize: '12px', color: CSS.muted, marginTop: '6px' } },
-          'Dica: no Google Maps, toque e segure no ponto para copiar a latitude e a longitude.'
-        ),
+        ...pick,
+        ...manual,
         messageBox(message),
         addButton
       ].filter(Boolean)),
@@ -180,6 +231,10 @@ AppSettingsPage({
           }
         },
         list
+      ),
+      Text(
+        { paragraph: true, style: { fontSize: '11px', color: CSS.muted, marginTop: '16px' } },
+        `Linhas, pontos e trajetos: GTFS oficial de Belo Horizonte (SUMOB/PBH), versão ${GTFS_INDEX.feed}. Posição dos ônibus: dados abertos de tempo real da PBH.`
       )
     ])
   }
