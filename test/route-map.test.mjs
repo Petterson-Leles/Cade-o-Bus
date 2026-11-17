@@ -193,7 +193,9 @@ test('sanitizeMapPayload descarta o que não for inteiro em faixa', () => {
     trail: [],
     stops: [1, 2, 3, 4],
     buses: [{ x: 1, y: -2, clamped: true }, null, null],
-    passed: null
+    passed: null,
+    level: null,
+    center: [0, 0]
   })
   assert.equal(sanitizeMapPayload(null), null)
   assert.deepEqual(sanitizeMapPayload({ stops: [1] }).stops, [])

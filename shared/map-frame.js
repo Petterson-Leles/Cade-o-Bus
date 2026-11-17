@@ -41,7 +41,14 @@ export function parseZoom(value) {
 //   (limitada a MIN..MAX). Se a escala bater no mínimo, o centro vai para perto
 //   do ponto, para o ponto nunca sair do mapa.
 // Devolve { k, center: [x, y], auto }.
-export function chooseFrame({ busXY = null, zoom = null, viewR = MAP_VIEW_R, iconR = FRAME_ICON_R } = {}) {
+// Com `levels` (mapa de ruas baixado no relógio: escalas fixas dos blocos, em px
+// de design por km, crescentes), a escala só pode ser um desses níveis:
+// - level (manual): índice do nível pedido pela coroa/botões;
+// - automático: o maior nível em que ônibus e ponto cabem (ou o menor de todos).
+// Nesse modo a saída leva também `level` (índice) e k não é arredondado.
+export function chooseFrame({ busXY = null, zoom = null, levels = null, level = null, viewR = MAP_VIEW_R, iconR = FRAME_ICON_R } = {}) {
+  const lv = parseLevels(levels)
+  if (lv) return chooseLevelFrame({ busXY, levels: lv, level: parseLevelIndex(level, lv.length), viewR, iconR })
   const manual = parseZoom(zoom)
   if (manual !== null) return { k: manual, center: [0, 0], auto: false }
   const ok = Array.isArray(busXY) && Number.isFinite(busXY[0]) && Number.isFinite(busXY[1])
@@ -58,12 +65,51 @@ export function chooseFrame({ busXY = null, zoom = null, viewR = MAP_VIEW_R, ico
   return { k: Math.round(k), center: [ux * shift, uy * shift], auto: true }
 }
 
+// Níveis fixos do mapa baixado: lista crescente de 1 a 6 escalas entre
+// MIN_PX_PER_KM e MAX_PX_PER_KM (px de design por km, até 2 casas) ou null.
+export function parseLevels(value) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 6) return null
+  const out = value.map(Number)
+  if (!out.every((k) => Number.isFinite(k) && k >= MIN_PX_PER_KM && k <= MAX_PX_PER_KM)) return null
+  for (let i = 1; i < out.length; i++) if (!(out[i] > out[i - 1])) return null
+  return out.map((k) => Math.round(k * 100) / 100)
+}
+
+// Índice de nível manual (inteiro dentro da lista) ou null (automático).
+export function parseLevelIndex(value, count) {
+  if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null
+  const n = Number(value)
+  return Number.isInteger(n) && n >= 0 && n < count ? n : null
+}
+
+// Enquadramento nos níveis fixos (ver chooseFrame).
+export function chooseLevelFrame({ busXY, levels, level, viewR = MAP_VIEW_R, iconR = FRAME_ICON_R }) {
+  if (level !== null && level !== undefined) return { k: levels[level], center: [0, 0], auto: false, level }
+  const ok = Array.isArray(busXY) && Number.isFinite(busXY[0]) && Number.isFinite(busXY[1])
+  // Sem ônibus: o nível mais perto da escala padrão.
+  let i = 0
+  if (!ok) {
+    for (let j = 1; j < levels.length; j++) if (Math.abs(levels[j] - DEFAULT_PX_PER_KM) < Math.abs(levels[i] - DEFAULT_PX_PER_KM)) i = j
+    return { k: levels[i], center: [0, 0], auto: true, level: i }
+  }
+  const d = Math.hypot(busXY[0], busXY[1])
+  const ideal = ((viewR - iconR) * 2 * 1000) / Math.max(MIN_FRAME_SPAN_M, d)
+  for (let j = 0; j < levels.length; j++) if (levels[j] <= ideal) i = j
+  const k = levels[i]
+  if (d === 0) return { k, center: [0, 0], auto: true, level: i }
+  const shift = Math.min(d / 2, ((viewR - iconR) * 1000) / k)
+  return { k, center: [(busXY[0] / d) * shift, (busXY[1] / d) * shift], auto: true, level: i }
+}
+
 // Fica no enquadramento automático anterior enquanto ele ainda serve: ônibus e
 // ponto cabem com folga e a escala não ficou longe demais da ideal (menos de
 // `maxZoomOut` vezes). Assim o mapa não "pula" a cada atualização e o ícone
 // continua deslizando. prev/ideal: saídas de chooseFrame.
 export function stableFrame(prev, ideal, busXY, { viewR = MAP_VIEW_R, iconR = FRAME_ICON_R, maxZoomOut = 1.6 } = {}) {
   if (!prev || !ideal || !prev.auto || !ideal.auto || !Array.isArray(prev.center)) return ideal
+  // Mapa de ruas ligado/desligado (ou níveis diferentes): não reaproveita.
+  const lv = (f) => (Number.isInteger(f.level) ? f.level : null)
+  if ((lv(prev) === null) !== (lv(ideal) === null)) return ideal
   if (!(prev.k > 0) || ideal.k / prev.k > maxZoomOut || prev.k > ideal.k * 1.05) return ideal
   const fits = (m) => {
     if (!m) return true

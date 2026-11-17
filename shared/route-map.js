@@ -368,7 +368,15 @@ export function sanitizeMapPayload(map, limit = 200) {
     trail: (flat(map.trail) || []).slice(0, 400),
     stops: flat(map.stops) || [],
     buses: Array.isArray(map.buses) ? map.buses.map(point) : [],
-    passed: null
+    passed: null,
+    // Mapa de ruas: nível fixo usado (índice) e centro do enquadramento em metros
+    // relativos ao ponto (x leste, y sul), para o relógio posicionar os blocos.
+    level: Number.isInteger(map.level) && map.level >= 0 && map.level <= 5 ? map.level : null,
+    center: [0, 0]
+  }
+  const c = map.center
+  if (Array.isArray(c) && c.length === 2 && c.every((v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 100000)) {
+    out.center = [Math.round(c[0] * 10) / 10, Math.round(c[1] * 10) / 10]
   }
   const p = point(map.passed)
   if (p && typeof map.passed.vehicle === 'string' && typeof map.passed.at === 'number' && Number.isFinite(map.passed.at)) {
