@@ -9,6 +9,7 @@ import { DEVICE_WIDTH, DEVICE_HEIGHT, getTheme, DEFAULT_THEME, GRADIENT, CHIP_BG
 import { parseSettingsResult } from '../../utils/favorites'
 import { etaFromSummary } from '../../shared/summary'
 import { greeting } from '../../shared/text'
+import { guard } from '../../utils/crash'
 
 const REFRESH_MS = 30 * 1000
 // Tela redonda: margens maiores no topo e nas laterais.
@@ -31,7 +32,7 @@ const TAP_SLOP = 24
 
 Page(
   BasePage({
-    onInit() {
+    onInit: guard('tela inicial onInit', function () {
       // Estado próprio de cada abertura da página (não reaproveita o objeto do módulo).
       // Mantém o que a zml já colocou em this.state (ex.: messaging).
       // view: 'loading' | 'offline' | 'list' (favorites só vale em 'list').
@@ -49,11 +50,11 @@ Page(
         openedAt: 0,
         destroyed: false
       }
-    },
+    }),
 
-    build() {
+    build: guard('tela inicial build', function () {
       this.loadFavorites()
-    },
+    }),
 
     colors() {
       return getTheme(this.state.theme)
@@ -68,12 +69,12 @@ Page(
     },
 
     // Chamado quando você muda os favoritos ou o tema no celular.
-    onCall(data) {
+    onCall: guard('tela inicial onCall', function (data) {
       if (!data) return
       if (data.method === 'SETTINGS_CHANGED' || data.method === 'FAVORITES_CHANGED') {
         this.applySettings(data.result)
       }
-    },
+    }),
 
     applySettings(result) {
       const { favorites, theme } = parseSettingsResult(result, this.state.theme)

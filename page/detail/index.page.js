@@ -33,6 +33,7 @@ import { animationPath, advanceAlong, blend } from '../../shared/route-map'
 import { MAP_BUS_MAX_R, DEFAULT_PX_PER_KM, zoomByCrown, zoomStep } from '../../shared/map-frame'
 import { fadeFrame, passedKey, PASS_PILL_MS } from '../../shared/passing'
 import { scaleLabel } from '../../shared/text'
+import { guard } from '../../utils/crash'
 
 const REFRESH_MS = 30 * 1000
 // Animação do ícone do ônibus ao longo do trajeto: um passo por segundo (bateria).
@@ -85,7 +86,7 @@ function ageText(sec) {
 
 Page(
   BasePage({
-    onInit(params) {
+    onInit: guard('tela do ponto onInit', function (params) {
       // Estado próprio de cada abertura da página (não reaproveita o objeto do módulo).
       // Mantém o que a zml já colocou em this.state (ex.: messaging).
       // view guarda o que está na tela para poder repintar ao trocar o tema:
@@ -115,7 +116,7 @@ Page(
         all: [],
         w: {}
       }
-    },
+    }),
 
     colors() {
       return getTheme(this.state.theme)
@@ -142,7 +143,7 @@ Page(
       return this.widget(hmUI.widget.CIRCLE, { center_x: px(MAP_CX), center_y: px(MAP_CY), radius: px(r), color })
     },
 
-    build() {
+    build: guard('tela do ponto build', function () {
       this.createWidgets()
       // Coroa digital: zoom manual do mapa (só um ouvinte por página; sai no onDestroy).
       onDigitalCrown({ callback: (key, degree) => this.onCrown(degree) })
@@ -152,7 +153,7 @@ Page(
       }
       this.showLoading()
       this.refresh()
-    },
+    }),
 
     createWidgets() {
       const c = this.colors()
@@ -255,14 +256,14 @@ Page(
     // Tema mudou no celular com a página aberta: apaga e recria os widgets com
     // as cores novas e repõe o que estava na tela. A consulta em andamento e o
     // timer seguem iguais (show() usa sempre state.w atual).
-    onCall(data) {
+    onCall: guard('tela do ponto onCall', function (data) {
       if (!data || this.state.destroyed) return
       if (data.method !== 'SETTINGS_CHANGED' && data.method !== 'FAVORITES_CHANGED') return
       const { theme } = parseSettingsResult(data.result, this.state.theme)
       if (theme === this.state.theme) return
       this.state.theme = theme
       this.repaint()
-    },
+    }),
 
     repaint() {
       const view = this.state.view
