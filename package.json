@@ -1,0 +1,20 @@
+{
+  "name": "cade-o-bus",
+  "version": "0.1.0",
+  "description": "Cadê o Busão: app Zepp OS que mostra os ônibus de BH (BHTrans) perto do seu ponto.",
+  "private": true,
+  "main": "app.js",
+  "scripts": {
+    "build": "zeus build",
+    "dev": "zeus dev",
+    "preview": "zeus preview",
+    "test": "node --test test/*.test.mjs"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@zeppos/device-types": "^3.0.0"
+  },
+  "dependencies": {
+    "@zeppos/zml": "^0.0.38"
+  }
+}
