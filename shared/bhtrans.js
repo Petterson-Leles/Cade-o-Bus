@@ -1,7 +1,7 @@
 // Lógica pura (sem APIs do Zepp OS) para ler o feed de tempo real da BHTrans.
 // Fica separada para poder ser testada com `npm test` no Node.
 import { lineCodesFor, matchesLine } from './line-codes.js'
-import { parseZoom } from './map-frame.js'
+import { parseZoom, parseLevels, parseLevelIndex } from './map-frame.js'
 
 // Feed público de posições GPS dos ônibus de BH (dados abertos da PBH).
 export const BHTRANS_REALTIME_URL = 'https://temporeal.pbh.gov.br/?param=C'
@@ -110,6 +110,13 @@ export function parseBusParams(params) {
   // Zoom manual do mini mapa (px por km, 30–260); fora disso = automático.
   const zoom = parseZoom(params.zoom)
   if (zoom !== null) out.zoom = zoom
+  // Mapa de ruas no relógio: escalas fixas dos blocos e o nível manual (índice).
+  const levels = parseLevels(params.levels)
+  if (levels) {
+    out.levels = levels
+    const level = parseLevelIndex(params.level, levels.length)
+    if (level !== null) out.level = level
+  }
   return out
 }
 
@@ -136,7 +143,7 @@ export function distanceMeters(lat1, lon1, lat2, lon2) {
 // Posições com mais de `maxAgeSec` segundos são descartadas.
 // - codes: códigos NL aceitos (padrão: lineCodesFor(line), ver shared/line-codes.js).
 // - routeDistance(lat, lon, { speed, heading }): opcional; devolve { toStopM, passed } medido ao longo
-//   do trajeto, ou null (ônibus fora da rota: fica a linha reta). Recebe também
+//   do trajeto, ou null (ônibus fora da rota: sai da lista). Recebe também
 //   o número do veículo (extra.vehicle), para o side service lembrar quem passou. Ônibus que já
 //   passou do ponto (passed) sai da lista.
 export function nearestBuses(rows, { line, codes, lat, lon, now = Date.now(), limit = 3, maxAgeSec = MAX_AGE_SEC, routeDistance = null }) {
@@ -161,8 +168,10 @@ export function nearestBuses(rows, { line, codes, lat, lon, now = Date.now(), li
           heading: toNumber(r[COLUMNS.heading]),
           vehicle: r[COLUMNS.vehicle] || ''
         })
-        if (onRoute && onRoute.passed) return null
-        if (onRoute && Number.isFinite(onRoute.toStopM)) {
+        // Com trajeto conhecido, ônibus fora dele (outra variante, outro sentido ou já
+        // longe depois do ponto) não conta: em linha reta ele parecia "chegando".
+        if (!onRoute || onRoute.passed) return null
+        if (Number.isFinite(onRoute.toStopM)) {
           distance = onRoute.toStopM
           alongRoute = true
         }

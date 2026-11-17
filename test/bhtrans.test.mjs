@@ -182,10 +182,10 @@ test('nearestBuses: codes (tabela NL) e distância pela rua (routeDistance)', ()
     seen.push(extra.heading)
     if (lat > -19.92) return { toStopM: null, passed: true } // d: já passou
     if (lat > -19.925) return { toStopM: 3000, passed: false } // a: pela rua é longe
-    return null // b: fora da rota, fica a linha reta
+    return null // b: fora da rota, sai da lista
   }
   const buses = nearestBuses(rows, { line: '9250', codes: ['557'], lat: -19.9191, lon: -43.9386, now: NOW, routeDistance })
-  assert.deepEqual(buses.map((x) => [x.vehicle, x.distanceM, !!x.alongRoute]), [['b', 1212, false], ['a', 3000, true]])
+  assert.deepEqual(buses.map((x) => [x.vehicle, x.distanceM, !!x.alongRoute]), [['a', 3000, true]])
   assert.deepEqual(seen, [90, 90, 90])
 })
 
