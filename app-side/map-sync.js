@@ -118,10 +118,12 @@ export const mapSync = {
   // Põe o tema na fila (não roda dois downloads ao mesmo tempo).
   mapStart(theme) {
     if (MAP_THEMES.indexOf(theme) < 0) return
+    const st = this.mapStates()[theme]
+    if (st.status !== STATUS.READY) this.mapSet(theme, { status: STATUS.DOWNLOADING, error: '', byUser: false })
     if (this.mapJob && this.mapJob.theme === theme && !this.mapJob.stop) return
     if (this.mapWaiting.indexOf(theme) < 0) this.mapWaiting.push(theme)
-    const st = this.mapStates()[theme]
-    if (st.status !== STATUS.READY) this.mapSet(theme, { status: STATUS.DOWNLOADING, error: '' })
+    // Um job parado ainda pode estar terminando o bloco atual: o próximo só
+    // começa quando ele acabar (mapPump no fim do job).
     if (!this.mapJob) this.mapPump()
   },
 
@@ -137,7 +139,7 @@ export const mapSync = {
       })
       .then(() => {
         if (this.mapJob === job) this.mapJob = null
-        this.mapPump()
+        if (!this.mapJob) this.mapPump()
       })
   },
 
@@ -153,7 +155,7 @@ export const mapSync = {
     const missing = missingTiles(list, states[theme].have)
     if (missing.length === 0) {
       this.mapSet(theme, { status: STATUS.READY, error: '' })
-      this.call({ method: 'MAP_CHANGED', result: { theme } })
+      this.mapNotify({ theme })
       return
     }
     this.mapSet(theme, { status: STATUS.DOWNLOADING, error: '' })
@@ -161,6 +163,7 @@ export const mapSync = {
       tiles: missing,
       process: (tile) => this.mapProcessTile(theme, tile, total),
       onDone: (tile) => {
+        if (job.stop) return
         const s = this.mapStates()
         s[theme] = markDone(s[theme], tile.i)
         this.mapSave(s[theme].status === STATUS.READY)
@@ -171,12 +174,12 @@ export const mapSync = {
     })
     if (job.stop) return
     if (result.status === 'failed') {
-      this.mapSet(theme, { status: STATUS.PAUSED, error: 'Relógio longe, app fechado ou sem internet. Continua depois.' })
+      this.mapSet(theme, { status: STATUS.PAUSED, error: 'Relógio longe, app fechado ou sem internet. Continua depois.', byUser: false })
       return
     }
     const s = this.mapStates()[theme]
     this.mapSet(theme, { status: s.done >= s.total ? STATUS.READY : STATUS.PAUSED })
-    if (s.done >= s.total) this.call({ method: 'MAP_CHANGED', result: { theme } })
+    if (s.done >= s.total) this.mapNotify({ theme })
   },
 
   // Baixa, converte e envia um bloco. Resolve quando o relógio recebeu.
@@ -273,10 +276,16 @@ export const mapSync = {
   // Para o tema (pausar/apagar).
   mapStopTheme(theme) {
     this.mapWaiting = this.mapWaiting.filter((t) => t !== theme)
-    if (this.mapJob && this.mapJob.theme === theme) {
-      this.mapJob.stop = true
-      this.mapJob = null
-      // O próximo da fila começa quando o bloco atual terminar (mapPump no fim do job).
+    // O job segue em this.mapJob até o bloco atual terminar; aí o próximo começa.
+    if (this.mapJob && this.mapJob.theme === theme) this.mapJob.stop = true
+  },
+
+  // Avisa o app do relógio, se estiver aberto, que o mapa mudou (ele sincroniza).
+  mapNotify(result) {
+    try {
+      this.call({ method: 'MAP_CHANGED', result })
+    } catch (e) {
+      // relógio desconectado: ele sincroniza quando abrir
     }
   },
 
@@ -293,7 +302,7 @@ export const mapSync = {
     } else if (cmd.action === 'pause') {
       themes.forEach((t) => {
         this.mapStopTheme(t)
-        if (this.mapStates()[t].status === STATUS.DOWNLOADING) this.mapSet(t, { status: STATUS.PAUSED, error: '' })
+        if (this.mapStates()[t].status === STATUS.DOWNLOADING) this.mapSet(t, { status: STATUS.PAUSED, error: '', byUser: true })
       })
     } else if (cmd.action === 'delete') {
       themes.forEach((t) => {
@@ -302,7 +311,7 @@ export const mapSync = {
         if (s.status !== STATUS.NONE || s.done > 0) this.mapSet(t, { status: STATUS.DELETING, error: '' })
       })
       // Se o app do relógio estiver aberto, ele sincroniza e apaga na hora.
-      this.call({ method: 'MAP_CHANGED', result: { delete: themes } })
+      this.mapNotify({ delete: themes })
     }
   },
 
@@ -321,7 +330,7 @@ export const mapSync = {
     const out = {}
     MAP_THEMES.forEach((t) => {
       const total = manifest ? tileList(manifest, t).length : states[t].total
-      const running = this.mapJob && this.mapJob.theme === t
+      const running = !!this.mapJob && this.mapJob.theme === t && !this.mapJob.stop
       const watchHex = normalizeBits(have[t], total)
       if (states[t].status === STATUS.DELETING) {
         if (countBits(watchHex, total) > 0) del.push(t)
@@ -332,10 +341,12 @@ export const mapSync = {
       } else {
         states[t] = applyWatchBits(states[t], watchHex, total)
       }
-      // Parou no meio (relógio longe, side service reiniciado): continua agora.
-      const resume = !running && (states[t].status === STATUS.PAUSED || states[t].status === STATUS.DOWNLOADING) && states[t].done < states[t].total
+      // Parou no meio sozinho (relógio longe, side service reiniciado): continua
+      // agora. Pausado pela pessoa nas configurações fica pausado.
+      const st = states[t].status
+      const resume = !running && (st === STATUS.DOWNLOADING || (st === STATUS.PAUSED && !states[t].byUser)) && states[t].done < states[t].total
       out[t] = { status: states[t].status, done: states[t].done, total, bytes: manifest && manifest.themes[t] ? manifest.themes[t].bytes : 0 }
-      if (resume) this.mapWaiting.indexOf(t) < 0 && this.mapWaiting.push(t)
+      if (resume && this.mapWaiting.indexOf(t) < 0) this.mapWaiting.push(t)
     })
     this.mapSave(true)
     if (!this.mapJob) this.mapPump()

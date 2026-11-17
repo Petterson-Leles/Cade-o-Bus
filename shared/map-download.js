@@ -25,7 +25,8 @@ export const PROMPT_SNOOZE_MS = 3 * 24 * 3600 * 1000
 const isTheme = (t) => MAP_THEMES.indexOf(t) >= 0
 
 export function emptyThemeState() {
-  return { status: STATUS.NONE, done: 0, total: 0, have: '', error: '', updatedAt: 0, stored: 0 }
+  // byUser: pausado pela pessoa (não volta sozinho quando o relógio aparece).
+  return { status: STATUS.NONE, done: 0, total: 0, have: '', error: '', updatedAt: 0, stored: 0, byUser: false }
 }
 
 // Estado de um tema (sempre um objeto completo e coerente).
@@ -39,6 +40,7 @@ export function cleanThemeState(raw) {
   s.error = typeof raw.error === 'string' ? raw.error.slice(0, 120) : ''
   s.updatedAt = Number(raw.updatedAt) > 0 ? Number(raw.updatedAt) : 0
   s.stored = Number(raw.stored) > 0 ? Math.round(Number(raw.stored)) : 0
+  s.byUser = raw.byUser === true && s.status === STATUS.PAUSED
   if (s.status === STATUS.READY && (s.total === 0 || s.done < s.total)) s.status = s.done > 0 ? STATUS.PAUSED : STATUS.NONE
   return s
 }

@@ -29,21 +29,18 @@ import {
 } from '../../utils/ui'
 import { parseDetailParams, parseSettingsResult } from '../../utils/favorites'
 import { mapOffset, etaFontSize, infoLine, parseBusesResult } from '../../utils/detail-view'
-import { animationPath, advanceAlong, blend } from '../../shared/route-map'
+import { animationPath } from '../../shared/route-map'
+import { startAnimation, animFrame, ANIM_TICK_MS } from '../../shared/bus-anim'
 import { MAP_BUS_MAX_R, DEFAULT_PX_PER_KM, zoomByCrown, zoomStep } from '../../shared/map-frame'
 import { fadeFrame, passedKey, PASS_PILL_MS } from '../../shared/passing'
 import { scaleLabel } from '../../shared/text'
 import { guard } from '../../utils/crash'
 
 const REFRESH_MS = 30 * 1000
-// Animação do ícone do ônibus ao longo do trajeto: um passo por segundo (bateria).
-const ANIM_MS = 1000
-// Para sozinha depois disso sem posição nova (consulta atrasada ou sem resposta).
-const ANIM_MAX_MS = 45 * 1000
-// Diferença até isso (px de design) entre o ícone e a posição nova: correção suave
-// em ANIM_FIX_STEPS passos; acima, pula direto.
-const ANIM_FIX_MAX_PX = 30
-const ANIM_FIX_STEPS = 2
+// Animação do ícone do ônibus: quadros curtos (ANIM_TICK_MS) com a posição
+// calculada pelo tempo real decorrido (shared/bus-anim.js); posição nova chega
+// com uma correção suave (ease-out, ANIM_FIX_MS) e só pula se a diferença for
+// maior que ANIM_JUMP_PX. Para sozinha após ANIM_MAX_MS sem dado novo (bateria).
 // Sumiço do ônibus que passou: um quadro a cada 100 ms durante ~4,5 s.
 const FADE_FRAME_MS = 100
 const DOTS_MS = 500
@@ -97,7 +94,7 @@ Page(
         theme,
         timer: null,
         dotsTimer: null,
-        anim: null, // { timer, path, speed, startedAt, src, fixFrom, fixStep, target }
+        anim: null, // { timer, src, path, speed, startedAt, fixFrom, target } (shared/bus-anim)
         busPos: null, // posição atual do ícone (px de design, relativa ao centro do mapa)
         map: null, // último mapa recebido (já validado)
         lastFrame: null, // enquadramento do mapa em que busPos foi calculada
@@ -358,36 +355,32 @@ Page(
       })
     },
 
-    // Desliza o ícone pela polyline (do ônibus ao ponto) a speed px/s.
-    // fixFrom: posição antiga do ícone, para uma correção curta até o caminho novo;
-    // target: posição real nova (usada quando não há caminho para andar).
-    startAnim(path, speed, src, fixFrom, target) {
+    // Desliza o ícone pela polyline (do ônibus ao ponto) a speed px/s, com a
+    // correção suave de prev (onde o ícone estava) até o caminho novo.
+    startAnim(path, speed, src, prev, target) {
       this.stopAnim()
       if (this.state.destroyed) return
-      const moving = path.length >= 4 && speed > 0
-      if (!moving && !fixFrom) return
-      const anim = { timer: null, path, speed: moving ? speed : 0, startedAt: Date.now(), src, fixFrom, fixStep: 0, target }
+      const anim = startAnimation({ prev, target, path, speed, now: Date.now() })
+      if (!anim) return
+      anim.src = src
+      anim.timer = null
       this.state.anim = anim
-      anim.timer = setInterval(() => this.animStep(anim), ANIM_MS)
+      anim.timer = setInterval(
+        guard('animação do ônibus', () => this.animStep(anim)),
+        ANIM_TICK_MS
+      )
     },
 
     animStep(anim) {
       if (this.state.destroyed || this.state.anim !== anim) return
-      const elapsed = Date.now() - anim.startedAt
-      if (elapsed > ANIM_MAX_MS) {
+      const pos = animFrame(anim, Date.now())
+      if (!pos) {
         this.stopAnim()
         return
       }
-      let pos = advanceAlong(anim.path, (anim.speed * elapsed) / 1000)
-      const done = !pos || pos.done
-      if (!pos) pos = anim.target
-      if (anim.fixFrom && anim.fixStep < ANIM_FIX_STEPS) {
-        anim.fixStep++
-        pos = blend(anim.fixFrom, pos, anim.fixStep / ANIM_FIX_STEPS)
-      }
       this.moveBus(pos, anim.src)
-      // Chegou ao ponto do usuário e a correção acabou: para até a próxima posição.
-      if (done && !(anim.fixFrom && anim.fixStep < ANIM_FIX_STEPS)) this.stopAnim()
+      // Chegou ao ponto do usuário (ou passou do tempo): para até a próxima posição.
+      if (pos.done) this.stopAnim()
     },
 
     stopAnim() {
@@ -667,9 +660,10 @@ Page(
       w.busDot.setProperty(hmUI.prop.VISIBLE, !!o)
       if (o) {
         const target = { x: o.dx, y: o.dy }
-        const close = prev && Math.hypot(prev.x - target.x, prev.y - target.y) <= ANIM_FIX_MAX_PX
-        this.moveBus(close ? prev : target, src)
-        this.startAnim(animationPath(map), map ? map.speed : 0, src, close ? prev : null, target)
+        this.startAnim(animationPath(map), map ? map.speed : 0, src, prev, target)
+        // Sem animação (pulo grande ou parado): vai direto; com ela, começa de onde está.
+        if (!this.state.anim) this.moveBus(target, src)
+        else this.animStep(this.state.anim)
       } else {
         this.state.busPos = null
       }
