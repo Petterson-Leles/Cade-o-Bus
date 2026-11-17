@@ -9,7 +9,8 @@ import {
   parseBusParams,
   withTimeout
 } from '../shared/bhtrans'
-import { readFavorites, FAVORITES_KEY } from '../utils/favorites'
+import { settingsPayload, FAVORITES_KEY } from '../utils/favorites'
+import { THEME_KEY } from '../utils/colors'
 
 // Tempo máximo para a BHTrans responder. O fetch do side service não garante
 // a opção timeout (a doc só lista url/method/headers/body), então há também
@@ -33,7 +34,8 @@ AppSideService(
     onRequest(req, res) {
       const method = req && req.method
       if (method === 'GET_FAVORITES') {
-        res(null, { result: readFavorites(settingsLib) })
+        // { favorites, theme }: o relógio usa o tema para pintar as telas.
+        res(null, { result: settingsPayload(settingsLib) })
       } else if (method === 'GET_BUSES') {
         const params = parseBusParams(req.params)
         if (!params) {
@@ -51,10 +53,10 @@ AppSideService(
       }
     },
 
-    // Só avisa o relógio quando os favoritos mudam (não no rascunho do formulário).
+    // Só avisa o relógio quando os favoritos ou o tema mudam (não no rascunho do formulário).
     onSettingsChange(change) {
-      if (!change || change.key !== FAVORITES_KEY) return
-      this.call({ method: 'FAVORITES_CHANGED', result: readFavorites(settingsLib) })
+      if (!change || (change.key !== FAVORITES_KEY && change.key !== THEME_KEY)) return
+      this.call({ method: 'SETTINGS_CHANGED', result: settingsPayload(settingsLib) })
     },
 
     onRun() {},

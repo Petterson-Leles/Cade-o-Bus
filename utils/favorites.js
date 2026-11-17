@@ -1,6 +1,8 @@
 // Favoritos = pontos de ônibus que você cadastra nas configurações do app
 // (no app Zepp do celular). Cada um: { id, name, line, lat, lon }.
 // Sem APIs do Zepp OS: roda no relógio, no celular e nos testes do Node.
+import { normalizeThemeName, readThemeName } from './colors.js'
+
 export const FAVORITES_KEY = 'favorites'
 export const MAX_TEXT_LEN = 30
 
@@ -60,4 +62,39 @@ export function removeFavorite(list, target) {
     ? list.findIndex((f) => f.id === target.id)
     : list.findIndex((f) => !f.id && sameContent(f, target))
   return index < 0 ? list.slice() : list.filter((_, i) => i !== index)
+}
+
+// O que o celular manda ao relógio (GET_FAVORITES e SETTINGS_CHANGED).
+export function settingsPayload(storage) {
+  return { favorites: readFavorites(storage), theme: readThemeName(storage) }
+}
+
+// Lê a resposta no relógio. Aceita o formato antigo (só a lista de favoritos):
+// nesse caso o tema fica o atual (fallbackTheme).
+export function parseSettingsResult(result, fallbackTheme) {
+  if (Array.isArray(result)) {
+    return { favorites: sanitizeFavorites(result), theme: normalizeThemeName(fallbackTheme) }
+  }
+  if (!result || typeof result !== 'object') {
+    return { favorites: [], theme: normalizeThemeName(fallbackTheme) }
+  }
+  return {
+    favorites: sanitizeFavorites(result.favorites),
+    theme: normalizeThemeName(result.theme === undefined ? fallbackTheme : result.theme)
+  }
+}
+
+// Params da tela de detalhe: JSON de { fav, theme }. Aceita também o favorito puro
+// (formato antigo). fav fica null se o ponto não for utilizável.
+export function parseDetailParams(params) {
+  let data = null
+  try {
+    data = typeof params === 'string' ? JSON.parse(params) : params
+  } catch (e) {
+    data = null
+  }
+  if (!data || typeof data !== 'object') return { fav: null, theme: normalizeThemeName(null) }
+  const raw = data.fav && typeof data.fav === 'object' ? data.fav : data
+  const fav = sanitizeFavorites([raw])[0] || null
+  return { fav, theme: normalizeThemeName(data.theme) }
 }
