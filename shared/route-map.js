@@ -341,7 +341,23 @@ export function buildMapPayload({
     const lon = toNum(b.lon)
     return Number.isFinite(lat) && Number.isFinite(lon) ? project(lat, lon) : null
   }
-  payload.buses = buses.map((b) => (b ? place(metersOf(b, onRoute(b) ? b.route.along : NaN)) : null))
+  // Ônibus no trajeto e fora do círculo: em vez de puxar em linha reta para a borda
+  // (sairia da rua), anda pelo trajeto em direção ao ponto até entrar no raio maxR.
+  const placeOnRoute = (b) => {
+    const along = b.route.along
+    const pos = place(pointAt(ctx.pts, ctx.cum, along))
+    if (!pos || !pos.clamped || ctx.stopAlong === null) return pos
+    const end = along <= ctx.stopAlong + PASSED_TOLERANCE_M ? ctx.stopAlong : ctx.total + ctx.stopAlong
+    const step = Math.max(1, 2 / pxPerM)
+    for (let a = along, n = 0; a <= end && n < 4000; a += step, n++) {
+      const m = pointAt(ctx.pts, ctx.cum, a > ctx.total ? a - ctx.total : a)
+      const x = (m[0] - cx) * pxPerM
+      const y = (m[1] - cy) * pxPerM
+      if (Math.hypot(x, y) <= maxR) return { x: Math.round(x) || 0, y: Math.round(y) || 0, clamped: true }
+    }
+    return pos
+  }
+  payload.buses = buses.map((b) => (b ? (onRoute(b) ? placeOnRoute(b) : place(metersOf(b, NaN))) : null))
   if (passed) {
     const pos = place(metersOf(passed, toNum(passed.along)))
     if (pos) payload.passed = { ...pos, vehicle: String(passed.vehicle || '').slice(0, 12), at: Number(passed.at) || 0 }
@@ -427,14 +443,78 @@ export function speedPxPerSec(kmh, pxPerKm = MAP_PX_PER_KM) {
   return ((v / 3.6) * pxPerKm) / 1000
 }
 
-// Caminho da animação: do ônibus até o ponto, em pixels (último pedaço do destaque,
-// que termina no ponto). Só vale se o ônibus estiver dentro do mapa (não preso à
-// borda) e o pedaço começar perto dele; senão [].
+// Caminho da animação: do ícone do ônibus até o ponto, em pixels, seguindo o
+// trajeto (último pedaço do destaque, que termina no ponto). Começa na projeção
+// do ícone nesse pedaço (o ícone preso à borda do mapa também fica no trajeto);
+// se o ícone estiver a mais de maxStartGapPx do pedaço, [].
 export function animationPath(map, maxStartGapPx = 6) {
   if (!map || !map.hi || map.hi.length === 0 || !map.buses || !map.buses[0]) return []
   const bus = map.buses[0]
-  if (bus.clamped) return []
   const piece = map.hi[map.hi.length - 1]
-  if (!piece || piece.length < 4 || Math.hypot(piece[0] - bus.x, piece[1] - bus.y) > maxStartGapPx) return []
-  return piece
+  if (!piece || piece.length < 4) return []
+  let best = null
+  for (let i = 0; i + 3 < piece.length; i += 2) {
+    const ax = piece[i]
+    const ay = piece[i + 1]
+    const dx = piece[i + 2] - ax
+    const dy = piece[i + 3] - ay
+    const len2 = dx * dx + dy * dy
+    const t = len2 > 0 ? Math.max(0, Math.min(1, ((bus.x - ax) * dx + (bus.y - ay) * dy) / len2)) : 0
+    const x = ax + t * dx
+    const y = ay + t * dy
+    const d = Math.hypot(bus.x - x, bus.y - y)
+    if (!best || d < best.d - 1e-9) best = { d, i, x, y, t }
+  }
+  if (!best || best.d > maxStartGapPx) return []
+  if (best.i === 0 && best.t === 0) return piece
+  const out = [best.x, best.y]
+  for (let j = best.i + 2; j < piece.length; j += 2) out.push(piece[j], piece[j + 1])
+  return out.length >= 4 ? out : []
+}
+
+// ---- Variantes da linha (vários shapes no mesmo sentido) ----
+
+// Ponto a até isso de um trajeto conta como "o trajeto passa pelo ponto".
+export const STOP_ON_ROUTE_M = 60
+
+// variants: [{ shape, stops, main }] (lineVariants de gtfs.js) -> só os que passam
+// pelo ponto, já com o contexto: [{ ctx, stops, main }]. stopId (opcional): o ponto
+// precisa estar na sequência da variante. Se nenhum passar, fica o principal.
+export function variantsThroughStop(variants, stop, stopId, maxM = STOP_ON_ROUTE_M) {
+  const out = []
+  let main = null
+  ;(variants || []).forEach((v) => {
+    const ctx = v.shape && v.shape.length >= 2 ? routeContext(v.shape, stop) : null
+    const item = { ctx, stops: v.stops || [], main: !!v.main }
+    if (v.main) main = item
+    if (!ctx || ctx.stopAlong === null || !(ctx.stopOffM <= maxM)) return
+    if (stopId && item.stops.length > 0 && !item.stops.some((s) => String(s.id) === String(stopId))) return
+    out.push(item)
+  })
+  if (out.length === 0 && main) out.push(main)
+  return out
+}
+
+// Em qual variante o ônibus está: a mais perto (até maxOffM) que ainda chega ao
+// ponto; se em todas ele já passou, a mais perto (para o "passou"). Devolve a saída
+// de busOnRoute com `variant` (índice em variants) ou null (fora de todas: sai da lista).
+export function busOnVariants(variants, bus, opts) {
+  let best = null
+  ;(variants || []).forEach((v, i) => {
+    const r = v && v.ctx ? busOnRoute(v.ctx, bus, opts) : null
+    if (!r) return
+    const cand = { ...r, variant: i }
+    if (!best) {
+      best = cand
+      return
+    }
+    const ok = (x) => !x.passed && !x.wrongWay
+    if (ok(cand) !== ok(best)) {
+      if (ok(cand)) best = cand
+      return
+    }
+    // Mesma situação: o mais encaixado no trajeto; empate (~10 m): o que chega antes.
+    if (cand.offM < best.offM - 10 || (Math.abs(cand.offM - best.offM) <= 10 && ok(cand) && cand.toStopM < best.toStopM)) best = cand
+  })
+  return best
 }

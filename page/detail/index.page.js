@@ -29,7 +29,7 @@ import {
 } from '../../utils/ui'
 import { parseDetailParams, parseSettingsResult } from '../../utils/favorites'
 import { mapOffset, etaFontSize, infoLine, parseBusesResult } from '../../utils/detail-view'
-import { animationPath } from '../../shared/route-map'
+import { animationPath, pathLength } from '../../shared/route-map'
 import { startAnimation, animFrame, ANIM_TICK_MS } from '../../shared/bus-anim'
 import { MAP_BUS_MAX_R, DEFAULT_PX_PER_KM, zoomByCrown, zoomStep } from '../../shared/map-frame'
 import { fadeFrame, passedKey, PASS_PILL_MS } from '../../shared/passing'
@@ -96,6 +96,7 @@ Page(
         dotsTimer: null,
         anim: null, // { timer, src, path, speed, startedAt, fixFrom, target } (shared/bus-anim)
         busPos: null, // posição atual do ícone (px de design, relativa ao centro do mapa)
+        busRemain: null, // quanto falta do ícone ao ponto, ao longo do trajeto (px)
         map: null, // último mapa recebido (já validado)
         lastFrame: null, // enquadramento do mapa em que busPos foi calculada
         zoom: null, // null = automático; número = px por km pedido pela coroa/botões
@@ -272,6 +273,7 @@ Page(
       this.stopAnim()
       this.stopPassed()
       this.state.busPos = null
+      this.state.busRemain = null
       this.state.all.forEach((x) => hmUI.deleteWidget(x))
       this.state.all = []
       this.createWidgets()
@@ -344,8 +346,10 @@ Page(
     // ---- Ônibus em movimento ----
 
     // Ícone do ônibus na posição { x, y } (px de design, relativa ao centro do mapa).
-    moveBus(pos, src) {
+    // remain: quanto falta (px ao longo do trajeto) até o ponto, ou null.
+    moveBus(pos, src, remain = null) {
       this.state.busPos = { x: pos.x, y: pos.y }
+      this.state.busRemain = typeof remain === 'number' ? remain : null
       this.state.w.busDot.setProperty(hmUI.prop.MORE, {
         x: px(Math.round(MAP_CX + pos.x - BUS_HALF)),
         y: px(Math.round(MAP_CY + pos.y - BUS_HALF)),
@@ -355,12 +359,13 @@ Page(
       })
     },
 
-    // Desliza o ícone pela polyline (do ônibus ao ponto) a speed px/s, com a
-    // correção suave de prev (onde o ícone estava) até o caminho novo.
-    startAnim(path, speed, src, prev, target) {
+    // Desliza o ícone AO LONGO da polyline (do ônibus ao ponto) a speed px/s; a
+    // correção suave desfaz a diferença de distância até o ponto (prevRemain:
+    // quanto faltava no ícone antigo), também pelo trajeto (shared/bus-anim.js).
+    startAnim(path, speed, src, prevRemain) {
       this.stopAnim()
       if (this.state.destroyed) return
-      const anim = startAnimation({ prev, target, path, speed, now: Date.now() })
+      const anim = startAnimation({ path, speed, prevRemain, now: Date.now() })
       if (!anim) return
       anim.src = src
       anim.timer = null
@@ -378,7 +383,7 @@ Page(
         this.stopAnim()
         return
       }
-      this.moveBus(pos, anim.src)
+      this.moveBus(pos, anim.src, pos.remain)
       // Chegou ao ponto do usuário (ou passou do tempo): para até a próxima posição.
       if (pos.done) this.stopAnim()
     },
@@ -534,6 +539,7 @@ Page(
       this.stopAnim()
       this.stopPassed()
       this.state.busPos = null
+      this.state.busRemain = null
       this.clearMap()
       this.setVisible([w.statusTitle, w.statusDetail], true)
       w.statusTitle.setProperty(hmUI.prop.TEXT, title)
@@ -607,6 +613,7 @@ Page(
         this.showDataFrame(map)
         this.stopAnim()
         this.state.busPos = null
+        this.state.busRemain = null
         this.setVisible([w.busDot, ...w.otherDots], false)
         w.eta.setProperty(hmUI.prop.MORE, { x: px(NUM_X), y: px(168), w: px(NUM_W), h: px(60), text: 'Uai,', text_size: px(48), color: c.text })
         w.etaMin.setProperty(hmUI.prop.MORE, { x: px(NUM_X), y: px(228), w: px(NUM_W), h: px(34), text: 'nenhum ônibus', text_size: px(24), color: c.muted })
@@ -653,19 +660,22 @@ Page(
       const src = busIcon(first.etaMin, this.state.theme)
       // Posição antiga só serve para a correção suave se o enquadramento
       // (escala e centro, que mudam no zoom automático) for o mesmo.
-      const frame = map ? `${map.k}|${map.stop.x}|${map.stop.y}` : ''
-      const prev = this.state.lastFrame === frame ? this.state.busPos : null
+      // O mesmo veículo também: a correção só faz sentido para o mesmo ônibus.
+      const frame = map ? `${map.k}|${map.stop.x}|${map.stop.y}|${first.vehicle}` : ''
+      const prevRemain = this.state.lastFrame === frame ? this.state.busRemain : null
       this.state.lastFrame = frame
       this.stopAnim()
       w.busDot.setProperty(hmUI.prop.VISIBLE, !!o)
       if (o) {
         const target = { x: o.dx, y: o.dy }
-        this.startAnim(animationPath(map), map ? map.speed : 0, src, prev, target)
-        // Sem animação (pulo grande ou parado): vai direto; com ela, começa de onde está.
-        if (!this.state.anim) this.moveBus(target, src)
+        const path = animationPath(map)
+        this.startAnim(path, map ? map.speed : 0, src, prevRemain)
+        // Sem animação (parado ou pulo grande): vai direto; com ela, começa de onde está.
+        if (!this.state.anim) this.moveBus(target, src, path.length >= 4 ? pathLength(path) : null)
         else this.animStep(this.state.anim)
       } else {
         this.state.busPos = null
+        this.state.busRemain = null
       }
     },
 
