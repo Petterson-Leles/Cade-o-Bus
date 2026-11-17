@@ -36,8 +36,7 @@ Page(
       // Estado próprio de cada abertura da página (não reaproveita o objeto do módulo).
       // Mantém o que a zml já colocou em this.state (ex.: messaging).
       // view: 'loading' | 'offline' | 'list' (favorites só vale em 'list').
-      this.state = {
-        ...this.state,
+      const fresh = {
         widgets: [],
         cards: [], // { fav, eta, etaMin } por favorito (widgets do tempo)
         theme: DEFAULT_THEME,
@@ -50,9 +49,13 @@ Page(
         openedAt: 0,
         destroyed: false
       }
+      // No relógio, trocar o objeto this.state não funciona: atualiza o que já existe.
+      if (!this.state || typeof this.state !== 'object') this.state = {}
+      Object.assign(this.state, fresh)
     }),
 
     build: guard('tela inicial build', function () {
+      if (!this.state || !Array.isArray(this.state.widgets)) this.onInit()
       this.loadFavorites()
     }),
 

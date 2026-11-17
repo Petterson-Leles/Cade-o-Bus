@@ -92,8 +92,7 @@ Page(
       // view guarda o que está na tela para poder repintar ao trocar o tema:
       // { kind: 'loading' } | { kind: 'status', title, detail, role } | { kind: 'data', result }.
       const { fav, theme } = parseDetailParams(params)
-      this.state = {
-        ...this.state,
+      const fresh = {
         fav,
         theme,
         timer: null,
@@ -116,6 +115,9 @@ Page(
         all: [],
         w: {}
       }
+      // No relógio, trocar o objeto this.state não funciona: atualiza o que já existe.
+      if (!this.state || typeof this.state !== 'object') this.state = {}
+      Object.assign(this.state, fresh)
     }),
 
     colors() {
@@ -144,6 +146,7 @@ Page(
     },
 
     build: guard('tela do ponto build', function () {
+      if (!this.state || !Array.isArray(this.state.all)) this.onInit()
       this.createWidgets()
       // Coroa digital: zoom manual do mapa (só um ouvinte por página; sai no onDestroy).
       onDigitalCrown({ callback: (key, degree) => this.onCrown(degree) })

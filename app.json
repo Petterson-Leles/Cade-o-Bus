@@ -27,7 +27,6 @@
       "module": {
         "page": {
           "pages": [
-            "page/diag/index.page",
             "page/home/index.page",
             "page/detail/index.page"
           ]
