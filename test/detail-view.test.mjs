@@ -48,3 +48,15 @@ test('infoLine', () => {
   assert.equal(infoLine(first, []), '1,2 km · ônibus 40001')
   assert.equal(infoLine(null, []), '')
 })
+
+test('parseBusesResult aceita { buses, map } e o formato antigo', async () => {
+  const { parseBusesResult } = await import('../utils/detail-view.js')
+  const bus = { etaMin: 3, distanceM: 500, vehicle: '1' }
+  assert.deepEqual(parseBusesResult([bus]), { buses: [bus], map: null })
+  const r = parseBusesResult({ buses: [bus], map: { r: 96, route: [[0, 0, 5, 5]], hi: [], stops: [], buses: [{ x: 1, y: 2 }] } })
+  assert.deepEqual(r.buses, [bus])
+  assert.deepEqual(r.map.route, [[0, 0, 5, 5]])
+  assert.deepEqual(r.map.buses, [{ x: 1, y: 2, clamped: false }])
+  assert.deepEqual(parseBusesResult(null), { buses: [], map: null })
+  assert.deepEqual(parseBusesResult({ buses: 'x' }), { buses: [], map: null })
+})

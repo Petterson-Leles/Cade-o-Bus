@@ -10,6 +10,8 @@ export const MAP_RADIUS_M = 750
 export const MAP_PX_PER_KM = 128
 // Raio útil do mapa em pixels de design (750 m * 128 px/km = 96 px).
 export const MAP_RADIUS_PX = Math.round((MAP_RADIUS_M / 1000) * MAP_PX_PER_KM)
+// Centro do ícone do ônibus (48 px) até no máximo isso do centro, para caber no anel (raio 104).
+export const MAP_BUS_MAX_R = 80
 // Ônibus a mais que isso do trajeto é tratado como fora da rota (linha reta).
 export const MAX_OFF_ROUTE_M = 150
 // Tolerância para considerar que o ônibus "já passou" do ponto (GPS impreciso).

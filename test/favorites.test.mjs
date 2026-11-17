@@ -72,3 +72,20 @@ test('newFavoriteId gera ids diferentes', () => {
   assert.notEqual(newFavoriteId(1, () => 0.1), newFavoriteId(1, () => 0.2))
   assert.equal(typeof newFavoriteId(), 'string')
 })
+
+test('sanitizeFavorites guarda dir (0/1) e stopId válidos do GTFS', () => {
+  const [a, b] = sanitizeFavorites([
+    { id: 'x', name: 'Casa', line: '9250', dir: '1', stopId: ' 14784087 ', lat: '-19.9', lon: '-43.9' },
+    { name: 'B', line: '1', dir: 7, stopId: 'a b<script>', lat: 1, lon: 2 }
+  ])
+  assert.deepEqual(a, { id: 'x', name: 'Casa', line: '9250', lat: '-19.9', lon: '-43.9', dir: 1, stopId: '14784087' })
+  assert.deepEqual(b, { name: 'B', line: '1', lat: '1', lon: '2' })
+  assert.equal(sanitizeFavorites([{ name: 'C', line: '1', dir: true, lat: 1, lon: 2 }])[0].dir, undefined)
+  assert.equal(sanitizeFavorites([{ name: 'C', line: '1', dir: 0, lat: 1, lon: 2 }])[0].dir, 0)
+})
+
+test('removeFavorite sem id compara também sentido e ponto', () => {
+  const a = { name: 'P', line: '1', lat: '1', lon: '2', dir: 0, stopId: '10' }
+  const b = { name: 'P', line: '1', lat: '1', lon: '2', dir: 1, stopId: '10' }
+  assert.deepEqual(removeFavorite([a, b], { ...b }), [a])
+})

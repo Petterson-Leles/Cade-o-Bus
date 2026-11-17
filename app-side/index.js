@@ -13,7 +13,7 @@ import { settingsPayload, FAVORITES_KEY } from '../utils/favorites'
 import { THEME_KEY } from '../utils/colors'
 import { lineCodesFor } from '../shared/line-codes'
 import { lineShape, lineStops } from '../shared/gtfs'
-import { routeContext, busOnRoute, buildMapPayload, MAP_RADIUS_PX } from '../shared/route-map'
+import { routeContext, busOnRoute, buildMapPayload, MAP_BUS_MAX_R } from '../shared/route-map'
 // Pacote gerado por scripts/build-gtfs.mjs (GTFS oficial de BH, SUMOB/PBH).
 import GTFS_INDEX from '../data/gtfs-index'
 import GTFS_SHAPES from '../data/gtfs-shapes'
@@ -22,8 +22,6 @@ import GTFS_SHAPES from '../data/gtfs-shapes'
 // a opção timeout (a doc só lista url/method/headers/body), então há também
 // um limite próprio com Promise.race.
 const FETCH_TIMEOUT_MS = 15 * 1000
-// Margem entre o raio do trajeto e o centro do marcador do ônibus no mapa.
-const BUS_MARGIN_PX = 4
 
 // Trajeto e pontos em volta de cada favorito, calculados uma vez por ponto.
 const routeCache = new Map()
@@ -67,7 +65,7 @@ AppSideService(
         stop: { id: params.stopId, lat: params.lat, lon: params.lon },
         buses: buses.map((b) => ({ lat: b.lat, lon: b.lon, route: ctx ? busOnRoute(ctx, b) : null })),
         lineStops: route ? route.stops : [],
-        busMaxR: MAP_RADIUS_PX - BUS_MARGIN_PX
+        busMaxR: MAP_BUS_MAX_R
       })
       return { buses, map }
     },

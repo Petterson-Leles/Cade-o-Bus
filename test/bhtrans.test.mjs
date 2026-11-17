@@ -155,3 +155,35 @@ test('withTimeout rejeita se demorar e repassa o resultado se não', async () =>
   await assert.rejects(withTimeout(new Promise(() => {}), 20), /Tempo esgotado/)
   await assert.rejects(withTimeout(Promise.reject(new Error('falhou')), 50), /falhou/)
 })
+
+test('parseBusParams aceita sentido e ponto do GTFS (opcionais)', () => {
+  assert.deepEqual(parseBusParams({ line: '9250', lat: -19.9, lon: -43.9, dir: '1', stopId: 14784087 }), {
+    line: '9250', lat: -19.9, lon: -43.9, dir: 1, stopId: '14784087'
+  })
+  assert.deepEqual(parseBusParams({ line: '9250', lat: -19.9, lon: -43.9, dir: 3, stopId: 'x y' }), {
+    line: '9250', lat: -19.9, lon: -43.9
+  })
+})
+
+test('nearestBuses: codes (tabela NL) e distância pela rua (routeDistance)', () => {
+  const csv = [
+    'NL;NV;LT;LG;VL;HR;DG',
+    '557;a;-19,9200;-43,9386;20;;90',
+    '557;b;-19,9300;-43,9386;20;;90',
+    '9250;c;-19,9191;-43,9390;20;;90',
+    '557;d;-19,9191;-43,9387;20;;90'
+  ].join('\n')
+  const rows = parseCsv(csv)
+  // Sem tabela: compara NL com o número da linha.
+  assert.deepEqual(nearestBuses(rows, { line: '9250', lat: -19.9191, lon: -43.9386, now: NOW }).map((x) => x.vehicle), ['c'])
+  const seen = []
+  const routeDistance = (lat, lon, extra) => {
+    seen.push(extra.heading)
+    if (lat > -19.92) return { toStopM: null, passed: true } // d: já passou
+    if (lat > -19.925) return { toStopM: 3000, passed: false } // a: pela rua é longe
+    return null // b: fora da rota, fica a linha reta
+  }
+  const buses = nearestBuses(rows, { line: '9250', codes: ['557'], lat: -19.9191, lon: -43.9386, now: NOW, routeDistance })
+  assert.deepEqual(buses.map((x) => [x.vehicle, x.distanceM, !!x.alongRoute]), [['b', 1213, false], ['a', 3000, true]])
+  assert.deepEqual(seen, [90, 90, 90])
+})

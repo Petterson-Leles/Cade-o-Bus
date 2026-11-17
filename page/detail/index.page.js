@@ -6,10 +6,10 @@
 import * as hmUI from '@zos/ui'
 import { px } from '@zos/utils'
 import { BasePage } from '@zeppos/zml/base-page'
-import { DEVICE_WIDTH, DEVICE_HEIGHT, getTheme, etaColor, etaLabel, ROUTE_HIGHLIGHT } from '../../utils/ui'
+import { DEVICE_WIDTH, DEVICE_HEIGHT, getTheme, etaColor, etaLabel, busIcon, BUS_ICON_SIZE, ROUTE_HIGHLIGHT } from '../../utils/ui'
 import { parseDetailParams, parseSettingsResult } from '../../utils/favorites'
 import { mapOffset, etaFontSize, infoLine, parseBusesResult } from '../../utils/detail-view'
-import { MAP_PX_PER_KM, MAX_MAP_STOPS } from '../../shared/route-map'
+import { MAP_PX_PER_KM, MAX_MAP_STOPS, MAP_BUS_MAX_R } from '../../shared/route-map'
 
 const REFRESH_MS = 30 * 1000
 const DOTS_MS = 500
@@ -23,14 +23,15 @@ const NUM_W = 190
 const MAP_CX = 345
 const MAP_CY = 240
 const MAP_RING_R = 104 // borda do mapa
-const BUS_R = 12 // marcador do primeiro ônibus
+// Primeiro ônibus: ícone "frente do ônibus" (PNG 48x48 por faixa de tempo e tema).
+const BUS_HALF = BUS_ICON_SIZE / 2
 const OTHER_R = 6 // marcadores dos seguintes
 const STOP_R = 10 // marcador do ponto
 const LINE_STOP_R = 4 // outros pontos da linha
 const ROUTE_W = 3 // espessura do trajeto
 const HI_W = 6 // espessura do trecho ônibus -> ponto
 // O centro do marcador fica dentro do anel.
-const MAP_MAX_R = MAP_RING_R - BUS_R
+const MAP_MAX_R = MAP_BUS_MAX_R
 // Canvas do trajeto: quadrado em volta do anel.
 const CANVAS_X = MAP_CX - MAP_RING_R
 const CANVAS_Y = MAP_CY - MAP_RING_R
@@ -195,11 +196,14 @@ Page(
           })
         )
       }
-      w.busDot = this.widget(hmUI.widget.CIRCLE, {
-        center_x: px(MAP_CX),
-        center_y: px(MAP_CY),
-        radius: px(BUS_R),
-        color: c.eta
+      // src é relativo à pasta assets do target (assets/common.r/).
+      w.busDot = this.widget(hmUI.widget.IMG, {
+        x: px(MAP_CX - BUS_HALF),
+        y: px(MAP_CY - BUS_HALF),
+        w: px(BUS_ICON_SIZE),
+        h: px(BUS_ICON_SIZE),
+        auto_scale: true,
+        src: busIcon(null, this.state.theme)
       })
       // Aviso de GPS velho, logo abaixo do mapa.
       w.etaAge = this.text({ x: px(250), y: px(344), w: px(190), h: px(26), text_size: px(20), color: c.error })
@@ -407,12 +411,15 @@ Page(
 
       // Ônibus: posição em pixels vinda do celular; sem ela, calcula em linha reta.
       const stop = this.state.fav
-      // MORE recebe todas as propriedades do círculo de uma vez.
-      const place = (dot, bus, index, r, color) => {
+      const offset = (bus, index) => {
         const fromMap = map && map.buses[index]
-        const o = fromMap
+        return fromMap
           ? { dx: fromMap.x, dy: fromMap.y }
           : mapOffset(stop, bus, { pxPerKm: MAP_PX_PER_KM, maxR: MAP_MAX_R })
+      }
+      // MORE recebe todas as propriedades do círculo de uma vez.
+      const place = (dot, bus, index, r, color) => {
+        const o = offset(bus, index)
         dot.setProperty(hmUI.prop.VISIBLE, !!o)
         if (o) {
           dot.setProperty(hmUI.prop.MORE, {
@@ -427,7 +434,18 @@ Page(
         if (others[i]) place(dot, others[i], i + 1, OTHER_R, c.muted)
         else dot.setProperty(hmUI.prop.VISIBLE, false)
       })
-      place(w.busDot, first, 0, BUS_R, hot)
+      // Primeiro ônibus: ícone da faixa de tempo, centrado na posição (x-24, y-24).
+      const o = offset(first, 0)
+      w.busDot.setProperty(hmUI.prop.VISIBLE, !!o)
+      if (o) {
+        w.busDot.setProperty(hmUI.prop.MORE, {
+          x: px(MAP_CX + o.dx - BUS_HALF),
+          y: px(MAP_CY + o.dy - BUS_HALF),
+          w: px(BUS_ICON_SIZE),
+          h: px(BUS_ICON_SIZE),
+          src: busIcon(first.etaMin, this.state.theme)
+        })
+      }
 
       this.setFooter(`Atualizado ${clock()}`)
     },

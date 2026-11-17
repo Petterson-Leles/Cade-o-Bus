@@ -193,3 +193,23 @@ test('parseDetailParams lê { fav, theme } e o favorito puro', () => {
   assert.deepEqual(parseDetailParams(undefined), { fav: null, theme: 'dark' })
   assert.deepEqual(parseDetailParams(JSON.stringify({ fav: { name: 'X' }, theme: 'light' })), { fav: null, theme: 'light' })
 })
+
+test('busIcon: um PNG por faixa de ETA_BANDS e por tema', async () => {
+  const { busIcon, BUS_ICON_SLUGS } = await import('../utils/colors.js')
+  const fs = await import('node:fs')
+  assert.equal(BUS_ICON_SLUGS.length, ETA_BANDS.length)
+  assert.equal(busIcon(1, 'dark'), 'bus/dark-chegando.png')
+  assert.equal(busIcon(2, 'dark'), 'bus/dark-chegando.png')
+  assert.equal(busIcon(3, 'light'), 'bus/light-jaja.png')
+  assert.equal(busIcon(10, 'dark'), 'bus/dark-datempo.png')
+  assert.equal(busIcon(15, 'light'), 'bus/light-tranquilo.png')
+  assert.equal(busIcon(40, 'dark'), 'bus/dark-longe.png')
+  assert.equal(busIcon(null, 'azul'), 'bus/dark-longe.png')
+  // Todo nome devolvido existe em assets/common.r (src do IMG é relativo a essa pasta).
+  for (const theme of ['dark', 'light']) {
+    for (const min of [1, 4, 8, 12, 99]) {
+      const file = new URL(`../assets/common.r/${busIcon(min, theme)}`, import.meta.url)
+      assert.ok(fs.existsSync(file), busIcon(min, theme))
+    }
+  }
+})

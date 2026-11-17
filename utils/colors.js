@@ -92,6 +92,17 @@ export function etaColor(min, themeName) {
   return etaBand(min)[normalizeThemeName(themeName)]
 }
 
+// Ícone "frente do ônibus" do mini mapa, um por faixa de ETA_BANDS (mesma ordem)
+// e por tema: PNGs 48x48 em assets/common.r/bus/. O src do IMG é relativo à
+// pasta assets do target (common.r).
+export const BUS_ICON_SLUGS = Object.freeze(['chegando', 'jaja', 'datempo', 'tranquilo', 'longe'])
+export const BUS_ICON_SIZE = 48
+
+export function busIcon(min, themeName) {
+  const slug = BUS_ICON_SLUGS[ETA_BANDS.indexOf(etaBand(min))] || BUS_ICON_SLUGS[BUS_ICON_SLUGS.length - 1]
+  return `bus/${normalizeThemeName(themeName)}-${slug}.png`
+}
+
 // Rótulo curto que acompanha o número.
 export function etaLabel(min) {
   return etaBand(min).label
