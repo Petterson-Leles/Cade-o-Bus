@@ -43,7 +43,12 @@ export const THEMES = Object.freeze({
     cardEdge: 0x707e8c, // borda dos cartões: 3.4:1 sobre o cartão
     cardPressed: 0x2e3a46,
     ring: 0xb4bec2, // anel do mini mapa: 9.2:1
-    control: 0x5c6a78 // fundo dos botões +/− do mapa: 3.2:1
+    control: 0x5c6a78, // fundo dos botões +/− do mapa: 3.2:1
+    // Tela do ponto: textos direto sobre o mapa (sem fundo). ≥ 4,5:1 contra todas
+    // as superfícies dos blocos (MAP_SURFACES, test/colors.test.mjs).
+    mapMuted: 0xb4bec2, // 4.5:1 na avenida mais clara
+    mapError: 0xf4b4aa, // GPS velho: 4.9:1
+    outline: 0x0b0f14 // contorno dos algarismos e do "min" (PNG)
   }),
   light: Object.freeze({
     name: 'light',
@@ -63,7 +68,10 @@ export const THEMES = Object.freeze({
     cardEdge: 0xe3e7ea,
     cardPressed: 0xeef6f4,
     ring: 0xe3d9c6, // anel do mini mapa
-    control: 0xe3d9c6 // fundo dos botões +/− do mapa
+    control: 0xe3d9c6, // fundo dos botões +/− do mapa
+    mapMuted: 0x525c66, // 4.8:1 na avenida (#D3D9E2)
+    mapError: 0x9e2f31, // 5.1:1
+    outline: 0xffffff // contorno claro dos algarismos e do "min"
   })
 })
 
@@ -75,6 +83,14 @@ export function normalizeThemeName(value) {
 export function getTheme(name) {
   return THEMES[normalizeThemeName(name)]
 }
+
+// Cores das áreas dos blocos do mapa de ruas (fundo, ruas pequenas, médias e
+// avenidas, parques e água; os trilhos são só traços finos), por tema. A tela do
+// ponto põe os textos direto sobre o mapa: o contraste é conferido contra todas.
+export const MAP_SURFACES = Object.freeze({
+  dark: Object.freeze([0x141a21, 0x232c35, 0x33404d, 0x3f4e5d, 0x1b2b24, 0x1a2e3d]),
+  light: Object.freeze([0xf1f3f4, 0xffffff, 0xe6e9ec, 0xd3d9e2, 0xdcebd5, 0xc8e1f0])
+})
 
 // Trecho do trajeto entre o ônibus e o ponto, no mini mapa (os dois temas).
 export const ROUTE_HIGHLIGHT = 0x2e7d78
@@ -104,7 +120,7 @@ export const ETA_BANDS = Object.freeze([
 ])
 
 // Minutos inválidos (NaN, null, texto) caem na faixa "longe".
-function etaBand(min) {
+export function etaBand(min) {
   const n = typeof min === 'number' ? min : Number(min)
   if (min === null || min === undefined || min === '' || !Number.isFinite(n)) return ETA_BANDS[ETA_BANDS.length - 1]
   for (let i = 0; i < ETA_BANDS.length; i++) {

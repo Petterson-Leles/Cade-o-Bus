@@ -65,11 +65,14 @@ export function infoParts(first, rest) {
 
 // Resposta de GET_BUSES -> { buses, map }. Aceita o formato antigo (só a lista).
 // map passa por sanitizeMapPayload (números inteiros em faixa segura) ou vira null.
+// Faixa: o mapa ocupa a tela toda e o centro dele fica à direita, então os pontos vão
+// até ~352 px de design do centro (shared/map-frame.js MAP_CLIP).
+export const MAP_COORD_LIMIT = 500
 export function parseBusesResult(result) {
   if (Array.isArray(result)) return { buses: result, map: null }
   if (!result || typeof result !== 'object') return { buses: [], map: null }
   return {
     buses: Array.isArray(result.buses) ? result.buses : [],
-    map: sanitizeMapPayload(result.map)
+    map: sanitizeMapPayload(result.map, MAP_COORD_LIMIT)
   }
 }

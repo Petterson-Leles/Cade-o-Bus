@@ -35,12 +35,13 @@ export function parseZoom(value) {
 }
 
 // Área visível do mapa na tela do ponto (pixels de design, relativos ao centro do
-// mapa): o mapa ocupa a metade direita da tela e os ícones do ônibus e do ponto
-// ficam dentro deste retângulo (descontando a faixa de transição da esquerda e a
-// borda redonda). hx/hy: meia largura/altura para o CENTRO dos ícones.
-export const MAP_VIEW = Object.freeze({ hx: 76, hy: 116 })
-// Retângulo desenhado (canvas do mapa), relativo ao centro do mapa.
-export const MAP_CLIP = Object.freeze({ x0: -140, x1: 140, y0: -240, y1: 240 })
+// mapa): o mapa ocupa a tela toda e o centro do enquadramento fica à direita e um
+// pouco abaixo do centro da tela (shared/detail-layout.js MAP_CX/MAP_CY), longe do
+// número grande. Os ícones do ônibus e do ponto ficam dentro deste retângulo (inteiros
+// dentro da tela redonda). hx/hy: meia largura/altura para o CENTRO dos ícones.
+export const MAP_VIEW = Object.freeze({ hx: 64, hy: 85 })
+// Retângulo desenhado (canvas do mapa = a tela toda), relativo ao centro do mapa.
+export const MAP_CLIP = Object.freeze({ x0: -352, x1: 128, y0: -280, y1: 200 })
 // Aproxima um nível só quando ônibus e ponto cabem com essa folga (histerese: o
 // mapa não fica indo e voltando entre dois níveis a cada atualização).
 export const LEVEL_ZOOM_IN_MARGIN = 1.15

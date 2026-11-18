@@ -311,3 +311,30 @@ test('passedBusIcon: ícones cinza esmaecidos existem para os dois temas', async
     }
   }
 })
+
+test('tela do ponto: texto direto sobre o mapa legível nos dois temas', async () => {
+  const { MAP_SURFACES, CHIP_BG, CHIP_TEXT } = await import('../utils/colors.js')
+  for (const name of ['dark', 'light']) {
+    const t = THEMES[name]
+    const surfaces = MAP_SURFACES[name]
+    // O fundo do tema também aparece onde ainda não há bloco.
+    for (const bg of [...surfaces, t.bg]) {
+      // Textos pequenos (nome, rodapé, GPS velho, recado): 4,5:1.
+      for (const k of ['text', 'mapMuted', 'mapError']) {
+        const r = contrast(t[k], bg)
+        assert.ok(r >= 4.5, `${name}.${k} sobre ${bg.toString(16)}: ${r.toFixed(2)}`)
+      }
+    }
+    // Algarismos e "min" (PNG): o contorno separa do mapa; cor da faixa contra o
+    // contorno ≥ 3:1 (texto grande) e o contorno contrasta com o mapa do tema.
+    for (const band of ETA_BANDS) {
+      const r = contrast(band[name], t.outline)
+      assert.ok(r >= 3, `${band.label} ${name} no contorno: ${r.toFixed(2)}`)
+    }
+    assert.ok(contrast(t.text, t.outline) >= 4.5)
+    const outlineVsMap = Math.min(...surfaces.map((s) => contrast(t.outline, s)))
+    assert.ok(name === 'dark' ? luminance(t.outline) <= luminance(surfaces[0]) : luminance(t.outline) >= luminance(surfaces[0]), `${name}: contorno ${outlineVsMap.toFixed(2)}`)
+  }
+  // Selo da linha: texto branco no verde-azulado.
+  assert.ok(contrast(CHIP_TEXT, CHIP_BG) >= 4.5)
+})

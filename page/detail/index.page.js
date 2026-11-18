@@ -1,7 +1,8 @@
-// Tela de um ponto: informações numa coluna à esquerda (número grande do ônibus que
-// chega primeiro, "min", faixa, distância e os seguintes) e o mapa ocupando a metade
-// direita inteira, sem moldura, com uma faixa de transição na borda esquerda
-// (shared/detail-layout.js).
+// Tela de um ponto: o mapa ocupa a tela toda e o texto fica direto sobre ele, sem
+// cartão nem fundo (shared/detail-layout.js): no topo o nome do ponto e o selo da
+// linha; à esquerda o número grande do ônibus que chega primeiro (algarismos em PNG
+// com contorno, na cor da faixa de tempo, utils/eta-digits.js) e "min"; embaixo
+// "recado · distância" e os seguintes. O ponto fica à direita do centro (MAP_CX).
 // O mapa chega pronto do celular, já em pixels e já enquadrado: o zoom é só
 // automático (ônibus longe = mapa afastado; chegando, aproxima), com histerese na
 // troca de nível (shared/map-frame.js). Atualiza 30 s após cada resposta.
@@ -29,12 +30,13 @@ import {
   CHIP_BG,
   CHIP_TEXT
 } from '../../utils/ui'
+import { etaNumberLayout, etaDigitSrc, etaMinSrc, ETA_SCALES } from '../../utils/eta-digits'
 import { parseDetailParams, parseSettingsResult } from '../../utils/favorites'
-import { mapOffset, etaFontSize, infoParts, parseBusesResult } from '../../utils/detail-view'
+import { mapOffset, infoParts, parseBusesResult } from '../../utils/detail-view'
 import { animationPath, pathLength } from '../../shared/route-map'
 import { startAnimation, animFrame, ANIM_TICK_MS } from '../../shared/bus-anim'
 import { MAP_VIEW } from '../../shared/map-frame'
-import { LAYOUT, MAP_CX, MAP_CY, MAP_RECT, FADE_W, FADE_TOP_H, FADE_BOTTOM_H, fadeSrc, tileView, demandView } from '../../shared/detail-layout'
+import { LAYOUT, MAP_CX, MAP_CY, MAP_RECT, chipBox, estimateTextWidth, tileView, demandView } from '../../shared/detail-layout'
 import { fadeFrame, passedKey, PASS_PILL_MS } from '../../shared/passing'
 import { guard } from '../../utils/crash'
 import { tileInfo, touchTiles, saveManifest, canReceiveFiles, watchDiag } from '../../utils/map-store'
@@ -63,8 +65,8 @@ const MAX_OTHERS = 2
 const STALE_SEC = 120
 // Abaixo dessa escala os pontos da linha ficam de fora (viram poluição).
 const MIN_K_FOR_STOPS = 60
-// Blocos do mapa de ruas: o retângulo do mapa (280 x 480 de design) cabe em até
-// 3 x 3 blocos de 256 px físicos.
+// Blocos do mapa de ruas: a tela toda (466 px físicos) cabe em até 3 x 3 blocos
+// de 256 px.
 const MAX_TILES = 9
 
 const BUS_HALF = BUS_ICON_SIZE / 2
@@ -73,7 +75,7 @@ const LINE_STOP_R = 4 // outros pontos da linha
 const TRAIL_R = 2 // bolinhas do rastro
 const ROUTE_W = 4 // espessura do trajeto
 const HI_W = 7 // espessura do trecho ônibus -> ponto
-// Canvas do trajeto: a metade direita inteira (shared/detail-layout.js MAP_RECT).
+// Canvas do trajeto: a tela toda (shared/detail-layout.js MAP_RECT).
 // Coordenada do mapa (relativa ao centro do mapa, px de design) -> pixel do canvas.
 const cvx = (v) => px(MAP_CX - MAP_RECT.x + v)
 const cvy = (v) => px(MAP_CY - MAP_RECT.y + v)
@@ -81,7 +83,9 @@ const cvy = (v) => px(MAP_CY - MAP_RECT.y + v)
 // Largura centralizada que cabe na tela redonda a partir de uma margem lateral.
 const box = (margin) => ({ x: margin, w: DEVICE_WIDTH - 2 * margin })
 // Caixa do layout (px de design) -> propriedades do widget (px físicos).
-const at = (b) => ({ x: px(b.x), y: px(b.y), w: px(b.w), h: px(b.h) })
+const at = (b) => ({ x: Math.round(px(b.x)), y: Math.round(px(b.y)), w: Math.round(px(b.w)), h: Math.round(px(b.h)) })
+// Número de algarismos em imagens (utils/eta-digits.js: até 3).
+const MAX_DIGITS = ETA_SCALES.length
 
 function ageText(sec) {
   if (sec === null || sec === undefined) return ''
@@ -189,27 +193,19 @@ Page(
       // Fundo do tema: primeiro widget, cobre a tela toda.
       this.widget(hmUI.widget.FILL_RECT, { x: 0, y: 0, w: DEVICE_WIDTH, h: DEVICE_HEIGHT, color: c.bg })
 
-      // Mapa (metade direita inteira, sem moldura): blocos de ruas, trajeto no canvas,
-      // faixas de transição por cima e os marcadores por cima de tudo do mapa.
-      // Ruas: até MAX_TILES blocos de 256 px, cada IMG recortado ao retângulo do mapa
+      // Mapa (a tela toda, sem moldura nem esfumado): blocos de ruas, trajeto no
+      // canvas e os marcadores por cima de tudo do mapa.
+      // Ruas: até MAX_TILES blocos de 256 px, cada IMG recortado à tela
       // (w/h e pos_x/pos_y, doc do IMG:
       // https://docs.zepp.com/docs/reference/device-app-api/newAPI/ui/widget/IMG/).
       // Começam escondidos (src trocado ao desenhar).
       w.tiles = []
       for (let i = 0; i < MAX_TILES; i++) {
-        w.tiles.push(this.widget(hmUI.widget.IMG, { ...at({ x: MAP_RECT.x, y: 0, w: FADE_W, h: FADE_TOP_H }), src: fadeSrc(theme, 'top') }))
+        w.tiles.push(this.widget(hmUI.widget.IMG, { ...at({ x: 0, y: 0, w: BUS_ICON_SIZE, h: BUS_ICON_SIZE }), src: busIcon(null, theme) }))
       }
       this.setVisible(w.tiles, false)
       this.state.tileKeys = []
       w.mapCanvas = this.widget(hmUI.widget.CANVAS, at(MAP_RECT))
-      // Transição suave do mapa para o fundo (PNG com gradiente de alpha na cor do
-      // fundo, scripts/build-map-fades.mjs): borda esquerda, topo e base.
-      const fade = (b, side) => this.widget(hmUI.widget.IMG, { ...at(b), auto_scale: true, auto_scale_obj_fit: true, src: fadeSrc(theme, side) })
-      w.fades = [
-        fade({ x: MAP_RECT.x, y: MAP_RECT.y, w: FADE_W, h: MAP_RECT.h }, 'left'),
-        fade({ x: MAP_RECT.x, y: MAP_RECT.y, w: MAP_RECT.w, h: FADE_TOP_H }, 'top'),
-        fade({ x: MAP_RECT.x, y: MAP_RECT.y + MAP_RECT.h - FADE_BOTTOM_H, w: MAP_RECT.w, h: FADE_BOTTOM_H }, 'bottom')
-      ]
       // Seu ponto: halo verde-azulado, anel branco e miolo verde-azulado.
       w.stopHalo = this.circle(13, mixColor(c.bg, CHIP_BG, 0.3))
       w.stopWhite = this.circle(10, 0xffffff)
@@ -241,31 +237,43 @@ Page(
       w.mapDiag = this.text({
         ...at(L.mapDiag),
         text_size: px(L.mapDiag.size),
-        color: c.muted,
-        align_h: hmUI.align.RIGHT,
-        align_v: hmUI.align.BOTTOM,
+        color: c.mapMuted,
+        align_v: hmUI.align.TOP,
         text_style: hmUI.text_style.WRAP,
         text: this.state.diagText
       })
 
-      // Cabeçalho pequeno no topo: "Casa · Linha 9250".
-      this.text({ ...at(L.title), text: `${fav.name} · Linha ${fav.line}`, text_size: px(L.title.size), color: c.muted })
+      // Topo, centralizado: nome do ponto e, logo abaixo, o selo da linha (largura
+      // pela medida do texto). Texto direto sobre o mapa (cores de test/colors.test.mjs).
+      this.text({ ...at(L.title), text: fav.name, text_size: px(L.title.size), color: c.text })
+      const lineText = String(fav.line)
+      const chip = at(chipBox(this.textWidth(lineText, L.chip.size)))
+      this.widget(hmUI.widget.FILL_RECT, { ...chip, radius: Math.round(chip.h / 2), color: CHIP_BG })
+      this.text({ ...chip, text: lineText, text_size: px(L.chip.size), color: CHIP_TEXT })
 
-      // Coluna da esquerda (centrada em x = 140, até x = 225): número grande (cor pela
-      // proximidade), "min", rótulo da faixa, GPS velho, distância e os seguintes.
+      // Número grande à esquerda: até 3 IMG de algarismo (cor da faixa) e o "min"
+      // alinhado à base (setNumber). Começam escondidos.
+      w.digits = []
+      for (let i = 0; i < MAX_DIGITS; i++) {
+        w.digits.push(this.widget(hmUI.widget.IMG, { ...at({ x: 0, y: 0, w: 10, h: 10 }), auto_scale: true, src: etaMinSrc(theme) }))
+      }
+      w.minImg = this.widget(hmUI.widget.IMG, { ...at({ x: 0, y: 0, w: 10, h: 10 }), auto_scale: true, src: etaMinSrc(theme) })
+      // Número em texto comum (minuto fora de 0..999) e o "Uai," de sem ônibus.
       w.eta = this.text({ ...at(L.eta), text_size: px(L.eta.size), color: c.eta })
-      w.etaMin = this.text({ ...at(L.etaMin), text_size: px(L.etaMin.size), color: c.text, text: 'min' })
-      w.etaLabel = this.text({ ...at(L.etaLabel), text_size: px(L.etaLabel.size), color: c.eta })
-      w.etaAge = this.text({ ...at(L.etaAge), text_size: px(L.etaAge.size), color: c.error })
-      w.info = this.text({ ...at(L.dist), text_size: px(L.dist.size), color: c.text })
-      w.next = this.text({ ...at(L.next), text_size: px(L.next.size), color: c.muted })
+      w.empty1 = this.text({ ...at(L.emptyLine1), text_size: px(L.emptyLine1.size), color: c.text, text: 'nenhum ônibus' })
+      w.empty2 = this.text({ ...at(L.emptyLine2), text_size: px(L.emptyLine2.size), color: c.text, text: 'rodando agora' })
+      this.setVisible(this.numberWidgets(), false)
+      w.etaAge = this.text({ ...at(L.etaAge), text_size: px(L.etaAge.size), color: c.mapError })
+      // Rodapé, centralizado: "já já · 1,0 km" e "depois 7 e 15 min".
+      w.info = this.text({ ...at(L.info), text_size: px(L.info.size), color: c.text })
+      w.next = this.text({ ...at(L.next), text_size: px(L.next.size), color: c.mapMuted })
       // Recado das telas sem dados ("Nova tentativa em 30 s").
       w.footer = this.text({ ...at(L.footer), text_size: px(L.footer.size), color: c.muted })
       w.footer.setProperty(hmUI.prop.TEXT, this.state.footerText)
       // Fora da janela de aviso do ponto: recado discreto embaixo.
-      w.quiet = this.text({ ...at(L.quiet), text_size: px(L.quiet.size), color: c.muted, text: this.state.quiet ? QUIET_NOTE : '' })
+      w.quiet = this.text({ ...at(L.quiet), text_size: px(L.quiet.size), color: c.mapMuted, text: this.state.quiet ? QUIET_NOTE : '' })
 
-      // Pílula "Esse passou · vem o próximo" (por cima de tudo, some sozinha).
+      // Pílula "Esse passou · vem o próximo" (por cima do rodapé, some sozinha).
       w.pill = this.widget(hmUI.widget.FILL_RECT, { ...at(L.pill), radius: px(L.pill.h / 2), color: CHIP_BG })
       w.pillText = this.text({ ...at({ ...L.pill, x: L.pill.x + 5, w: L.pill.w - 10 }), text: 'Esse passou · vem o próximo', text_size: px(18), color: CHIP_TEXT })
       this.setVisible([w.pill, w.pillText], false)
@@ -281,6 +289,20 @@ Page(
         align_v: hmUI.align.TOP,
         text_style: hmUI.text_style.WRAP
       })
+    },
+
+    // Largura de um texto em px de design (getTextLayout mede em px físicos; sem ele,
+    // uma estimativa).
+    textWidth(text, size) {
+      try {
+        if (typeof hmUI.getTextLayout === 'function') {
+          const m = hmUI.getTextLayout(text, { text_size: px(size), text_width: px(400), wrapped: 0 })
+          if (m && m.width > 0) return (m.width * 1000) / px(1000)
+        }
+      } catch (e) {
+        // estimativa abaixo
+      }
+      return estimateTextWidth(text, size)
     },
 
     setFooter(text) {
@@ -351,11 +373,50 @@ Page(
 
     dataWidgets() {
       const w = this.state.w
-      return [
-        w.eta, w.etaMin, w.etaLabel, w.etaAge, w.info, w.next,
-        ...w.fades, w.stopHalo, w.stopWhite, w.stopDot,
-        ...w.otherDots, w.busDot, w.mapDiag
-      ]
+      return [w.etaAge, w.info, w.next, w.stopHalo, w.stopWhite, w.stopDot, ...w.otherDots, w.busDot, w.mapDiag]
+    },
+
+    // Número grande (imagens ou texto) e o recado de sem ônibus: setNumber/showEmpty.
+    numberWidgets() {
+      const w = this.state.w
+      return [...w.digits, w.minImg, w.eta, w.empty1, w.empty2]
+    },
+
+    // Minutos em algarismos PNG na cor da faixa (utils/eta-digits.js) e o "min"
+    // alinhado à base; fora de 0..999, texto comum. color: cor da faixa (texto).
+    setNumber(min, color) {
+      const w = this.state.w
+      const theme = this.state.theme
+      const lay = etaNumberLayout(min)
+      this.setVisible([w.empty1, w.empty2], false)
+      if (!lay) {
+        this.setVisible([...w.digits, w.minImg], false)
+        w.eta.setProperty(hmUI.prop.MORE, { ...at(LAYOUT.eta), text: `${min} min`, text_size: px(64), color })
+        w.eta.setProperty(hmUI.prop.VISIBLE, true)
+        return
+      }
+      w.eta.setProperty(hmUI.prop.VISIBLE, false)
+      w.digits.forEach((img, i) => {
+        const d = lay.digits[i]
+        if (!d) {
+          img.setProperty(hmUI.prop.VISIBLE, false)
+          return
+        }
+        img.setProperty(hmUI.prop.MORE, { ...at(d), src: etaDigitSrc(d.d, min, theme) })
+        img.setProperty(hmUI.prop.VISIBLE, true)
+      })
+      w.minImg.setProperty(hmUI.prop.MORE, { ...at(lay.min), src: etaMinSrc(theme) })
+      w.minImg.setProperty(hmUI.prop.VISIBLE, true)
+    },
+
+    // Sem ônibus agora (com o mapa): "Uai," grande e duas linhas onde fica o número.
+    showEmpty() {
+      const w = this.state.w
+      const c = this.colors()
+      const L = LAYOUT
+      this.setVisible([...w.digits, w.minImg], false)
+      w.eta.setProperty(hmUI.prop.MORE, { ...at(L.emptyTitle), text: 'Uai,', text_size: px(L.emptyTitle.size), color: c.text })
+      this.setVisible([w.eta, w.empty1, w.empty2], true)
     },
 
     refreshNow() {
@@ -700,6 +761,7 @@ Page(
       this.stopDots()
       this.state.hasData = false
       this.setVisible(this.dataWidgets(), false)
+      this.setVisible(this.numberWidgets(), false)
       this.stopAnim()
       this.stopPassed()
       this.state.busPos = null
@@ -767,7 +829,7 @@ Page(
         .then(done, done)
     },
 
-    // Mostra mapa e coluna da esquerda (dados) e esconde o estado.
+    // Mostra o mapa e os textos (dados) e esconde o estado.
     showDataFrame(map) {
       const w = this.state.w
       this.hideError()
@@ -806,17 +868,14 @@ Page(
           this.setFooter('')
           return
         }
-        // Sem ônibus, mas com o mapa (trajeto e ponto): recado na coluna da esquerda.
+        // Sem ônibus, mas com o mapa (trajeto e ponto): recado onde fica o número.
         this.state.view = { kind: 'data', result }
         this.showDataFrame(map)
         this.stopAnim()
         this.state.busPos = null
         this.state.busRemain = null
         this.setVisible([w.busDot, ...w.otherDots], false)
-        const L = LAYOUT
-        w.eta.setProperty(hmUI.prop.MORE, { ...at(L.emptyTitle), text: 'Uai,', text_size: px(L.emptyTitle.size), color: c.text })
-        w.etaMin.setProperty(hmUI.prop.MORE, { ...at(L.emptyLine1), text: 'nenhum ônibus', text_size: px(L.emptyLine1.size), color: c.muted })
-        w.etaLabel.setProperty(hmUI.prop.MORE, { ...at(L.emptyLine2), text: 'rodando agora', text_size: px(L.emptyLine2.size), color: c.muted })
+        this.showEmpty()
         w.etaAge.setProperty(hmUI.prop.TEXT, '')
         w.info.setProperty(hmUI.prop.TEXT, '')
         w.next.setProperty(hmUI.prop.TEXT, '')
@@ -829,17 +888,14 @@ Page(
       this.state.view = { kind: 'data', result }
       this.showDataFrame(map)
 
-      // Número grande: fonte menor com 2 ou 3 dígitos para caber na coluna.
-      const n = String(first.etaMin)
-      const L = LAYOUT
-      w.eta.setProperty(hmUI.prop.MORE, { ...at(L.eta), text: n, text_size: px(etaFontSize(n)), color: hot })
-      w.etaMin.setProperty(hmUI.prop.MORE, { ...at(L.etaMin), text: 'min', text_size: px(L.etaMin.size), color: c.text })
-      w.etaLabel.setProperty(hmUI.prop.MORE, { ...at(L.etaLabel), text: etaLabel(first.etaMin), text_size: px(L.etaLabel.size), color: hot })
+      // Número grande (menor com 2 ou 3 dígitos) na cor da faixa e "min".
+      this.setNumber(first.etaMin, hot)
 
       const stale = first.ageSec !== null && first.ageSec !== undefined && first.ageSec >= STALE_SEC
       w.etaAge.setProperty(hmUI.prop.TEXT, stale ? ageText(first.ageSec) : '')
+      // Rodapé: "já já · 1,0 km" e "depois 7 e 15 min".
       const info = infoParts(first, others)
-      w.info.setProperty(hmUI.prop.TEXT, info.dist)
+      w.info.setProperty(hmUI.prop.TEXT, [etaLabel(first.etaMin), info.dist].filter(Boolean).join(' · '))
       w.next.setProperty(hmUI.prop.TEXT, info.next)
 
       // Ônibus: posição em pixels vinda do celular; sem mapa, em linha reta do ponto
