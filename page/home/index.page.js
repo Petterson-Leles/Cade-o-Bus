@@ -15,6 +15,27 @@ import { saveManifest, haveBits, deleteTheme, canReceiveFiles } from '../../util
 // Sem conexão / celular sem internet / BHTrans fora do ar (shared/conn-errors.js).
 import { ERR, parseErrorField, requestFailureCode, errorScreen } from '../../shared/conn-errors'
 import { drawErrorScreen, startRetry, stopRetry, isBleConnected } from '../../utils/conn-screen'
+// Cópia dos pontos salvos no relógio: a lista aparece na hora, sem esperar o celular.
+// https://docs.zepp.com/docs/reference/device-app-api/newAPI/storage/localStorage/
+import { LocalStorage } from '@zos/storage'
+
+const SETTINGS_CACHE_KEY = 'cob.settingsCache'
+// Sem resposta do celular nesse tempo: mostra a tela de conexão em vez de esperar 60 s.
+const FAVORITES_TIMEOUT_MS = 20 * 1000
+let cacheStore = null
+function settingsCache(value) {
+  try {
+    if (!cacheStore) cacheStore = new LocalStorage()
+    if (value === undefined) {
+      const raw = cacheStore.getItem(SETTINGS_CACHE_KEY, '')
+      return raw ? JSON.parse(raw) : null
+    }
+    cacheStore.setItem(SETTINGS_CACHE_KEY, JSON.stringify(value))
+  } catch (e) {
+    // sem cache: segue esperando o celular
+  }
+  return null
+}
 
 const REFRESH_MS = 30 * 1000
 // Tela redonda: margens maiores no topo e nas laterais.
@@ -96,10 +117,23 @@ Page(
         this.showError(ERR.NO_BLE)
         return
       }
-      this.setView('loading')
-      this.request({ method: 'GET_FAVORITES' })
-        .then(guard('tela inicial favoritos', ({ result } = {}) => this.applySettings(result)))
-        .catch(() => this.showError(requestFailureCode()))
+      // Mostra na hora os pontos guardados no relógio; o celular atualiza depois.
+      const cached = !s.fromPhone ? settingsCache() : null
+      if (cached && s.view !== 'list') this.applySettings(cached, true)
+      else if (s.view !== 'list') this.setView('loading')
+      this.request({ method: 'GET_FAVORITES' }, { timeout: FAVORITES_TIMEOUT_MS })
+        .then(
+          guard('tela inicial favoritos', ({ result } = {}) => {
+            s.fromPhone = true
+            settingsCache(result)
+            this.applySettings(result)
+          })
+        )
+        .catch(() => {
+          // Com a lista guardada na tela, só deixa de atualizar os tempos (o resumo
+          // mostra o erro); sem nada na tela, mostra a tela de conexão.
+          if (s.view !== 'list') this.showError(requestFailureCode())
+        })
     },
 
     // Tela de erro com imagem (3 casos) e nova tentativa sozinha: na volta do
@@ -138,12 +172,12 @@ Page(
       }
     }),
 
-    applySettings(result) {
+    applySettings(result, fromCache) {
       const { favorites, theme, vibrate } = parseSettingsResult(result, this.state.theme, this.state.vibrate)
       this.state.theme = theme
       this.state.vibrate = vibrate
       // Alarmes do sistema: próximo início de janela de cada ponto (shared/schedule.js).
-      scheduleAlarms(favorites, vibrate)
+      if (!fromCache) scheduleAlarms(favorites, vibrate)
       this.setView('list', favorites)
       const alarm = this.state.alarm
       if (alarm) {
@@ -151,6 +185,7 @@ Page(
         const fav = favorites.find((f) => f.id === alarm.favId)
         if (fav) this.open(fav, true)
       }
+      if (fromCache) return // o resumo e o mapa esperam a resposta do celular
       this.refreshSummary(true)
       this.syncMap()
     },
