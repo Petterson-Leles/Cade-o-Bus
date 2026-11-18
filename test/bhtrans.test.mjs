@@ -203,3 +203,11 @@ test('nearestBuses passa o número do veículo para routeDistance', () => {
   nearestBuses(rows, { line: '9250', codes: ['9250'], lat: -19.92, lon: -43.94, routeDistance: (lat, lon, extra) => (seen.push(extra.vehicle), null) })
   assert.deepEqual(seen, ['40210'])
 })
+
+test('parseBusParams: níveis do mapa de ruas e nível manual', () => {
+  const p = parseBusParams({ line: '9250', lat: -19.9, lon: -43.9, levels: [41.2, 82.4, 164.81], level: 1 })
+  assert.deepEqual(p.levels, [41.2, 82.4, 164.81])
+  assert.equal(p.level, 1)
+  assert.equal(parseBusParams({ line: '9250', lat: -19.9, lon: -43.9, levels: [41.2], level: 4 }).level, undefined)
+  assert.equal(parseBusParams({ line: '9250', lat: -19.9, lon: -43.9, levels: 'x' }).levels, undefined)
+})

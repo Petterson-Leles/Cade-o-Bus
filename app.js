@@ -1,11 +1,48 @@
 import { BaseApp } from '@zeppos/zml/base-app'
+import { createMapStorage, storeReceivedTile } from './utils/map-store'
+
+// Estado do arquivo no evento 'change' (a doc chama o campo de `date`; os exemplos, de `data`).
+// https://docs.zepp.com/docs/reference/device-app-api/newAPI/transfer-file/TransferFile/
+const readyStateOf = (ev) => {
+  const d = ev && (ev.data || ev.date)
+  return d && d.readyState
+}
 
 App(
   BaseApp({
-    globalData: {},
+    globalData: {
+      // Uma instância só de LocalStorage para o app todo (utils/map-store.js).
+      mapStorage: null
+    },
     onCreate() {
       console.log('Cadê o Busão: app criado')
+      try {
+        this.globalData.mapStorage = createMapStorage()
+      } catch (e) {
+        console.log('Cadê o Busão: LocalStorage indisponível', e && e.message ? e.message : e)
+      }
     },
+
+    // Blocos do mapa de BH vindos do celular (inbox do TransferFile). A zml liga
+    // isso ao evento 'newfile' do inbox no onCreate do app; fica aqui (e não numa
+    // página) porque a zml remove todos os ouvintes do inbox quando uma página com
+    // onReceivedFile fecha. As páginas NÃO devem definir onReceivedFile.
+    onReceivedFile(file) {
+      try {
+        if (!file || typeof file.on !== 'function') return
+        file.on('change', (ev) => {
+          try {
+            if (readyStateOf(ev) !== 'transferred') return
+            if (!storeReceivedTile(file)) console.log('Mapa: arquivo ignorado', file.fileName)
+          } catch (e) {
+            console.log('Mapa: erro ao guardar bloco', e && e.message ? e.message : e)
+          }
+        })
+      } catch (e) {
+        console.log('Mapa: erro no arquivo recebido', e && e.message ? e.message : e)
+      }
+    },
+
     onDestroy() {
       console.log('Cadê o Busão: app encerrado')
     }

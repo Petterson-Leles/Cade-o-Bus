@@ -10,6 +10,8 @@ import { parseSettingsResult } from '../../utils/favorites'
 import { etaFromSummary } from '../../shared/summary'
 import { greeting } from '../../shared/text'
 import { guard } from '../../utils/crash'
+import { shouldPrompt, formatBytes, STATUS } from '../../shared/map-download'
+import { saveManifest, haveBits, tileInfo, deleteTheme, readPrompt, savePrompt, canReceiveFiles, themeProgress } from '../../utils/map-store'
 
 const REFRESH_MS = 30 * 1000
 // Tela redonda: margens maiores no topo e nas laterais.
@@ -47,6 +49,13 @@ Page(
         loading: false,
         dirty: false, // favoritos mudaram durante uma consulta: consulta de novo ao terminar
         openedAt: 0,
+        vibrate: true,
+        // Mapa de BH: aviso "Baixar o mapa?" (view 'list' com mapPrompt = true),
+        // recado curto no lugar da saudação e o estado do celular por tema.
+        mapPrompt: false,
+        mapNote: '',
+        mapThemes: null,
+        mapSyncing: false,
         destroyed: false
       }
       // No relógio, trocar o objeto this.state não funciona: atualiza o que já existe.
@@ -76,14 +85,106 @@ Page(
       if (!data) return
       if (data.method === 'SETTINGS_CHANGED' || data.method === 'FAVORITES_CHANGED') {
         this.applySettings(data.result)
+      } else if (data.method === 'MAP_CHANGED') {
+        // O celular terminou/apagou o mapa: sincroniza (e apaga, se for o caso).
+        this.syncMap()
       }
     }),
 
     applySettings(result) {
-      const { favorites, theme } = parseSettingsResult(result, this.state.theme)
+      const { favorites, theme, vibrate } = parseSettingsResult(result, this.state.theme, this.state.vibrate)
       this.state.theme = theme
+      this.state.vibrate = vibrate
       this.setView('list', favorites)
       this.refreshSummary(true)
+      this.syncMap()
+    },
+
+    // ---- Mapa de BH ----
+
+    // Conta ao celular o que o relógio já tem (MAP_SYNC); recebe o manifesto,
+    // o estado de cada tema e o que apagar. Depois decide se mostra o aviso.
+    syncMap(again) {
+      const s = this.state
+      if (s.destroyed || s.mapSyncing || !canReceiveFiles()) return
+      s.mapSyncing = true
+      this.request({ method: 'MAP_SYNC', params: { have: haveBits() } })
+        .then(
+          guard('tela inicial mapa', (data) => {
+            s.mapSyncing = false
+            const { result } = data || {}
+            if (s.destroyed || !result) return
+            if (result.manifest) saveManifest(result.manifest)
+            s.mapThemes = result.themes || null
+            const del = Array.isArray(result.delete) ? result.delete : []
+            if (del.length > 0) {
+              del.forEach((t) => deleteTheme(t))
+              if (!again) this.syncMap(true)
+              return
+            }
+            this.decideMapPrompt()
+          })
+        )
+        .catch(() => {
+          s.mapSyncing = false
+        })
+    },
+
+    decideMapPrompt() {
+      const s = this.state
+      const phone = s.mapThemes && s.mapThemes[s.theme]
+      const ready = !!tileInfo(s.theme, 1)
+      const show = s.view === 'list' && s.favorites.length > 0 && shouldPrompt({ ready, prompt: readPrompt(), phoneStatus: phone ? phone.status : STATUS.NONE })
+      let note = ''
+      if (!ready && phone && phone.status === STATUS.DOWNLOADING) {
+        const p = themeProgress(s.theme)
+        note = p.total > 0 ? `Mapa: chegou ${p.done} de ${p.total}` : 'Baixando o mapa pelo celular…'
+      }
+      if (show === s.mapPrompt && note === s.mapNote) return
+      s.mapPrompt = show
+      s.mapNote = note
+      this.draw()
+    },
+
+    mapSizeText() {
+      const phone = this.state.mapThemes && this.state.mapThemes[this.state.theme]
+      const size = phone && phone.bytes ? formatBytes(phone.bytes) : ''
+      return `(~${size || '3,5 MB'}, uma vez só)`
+    },
+
+    // "Baixar": pede ao celular para começar (MAP_DOWNLOAD) e guarda a escolha.
+    acceptMap() {
+      const s = this.state
+      savePrompt('yes')
+      s.mapPrompt = false
+      s.mapNote = 'Baixando o mapa pelo celular…'
+      this.draw()
+      this.request({ method: 'MAP_DOWNLOAD', params: { theme: s.theme, have: haveBits() } })
+        .then(
+          guard('tela inicial baixar mapa', (data) => {
+            const { result, error } = data || {}
+            if (s.destroyed) return
+            if (error || !result) {
+              s.mapNote = 'Não deu para baixar o mapa agora'
+            } else {
+              if (result.manifest) saveManifest(result.manifest)
+              s.mapThemes = result.themes || s.mapThemes
+            }
+            this.draw()
+          })
+        )
+        .catch(() => {
+          if (s.destroyed) return
+          s.mapNote = 'Sem conexão para baixar o mapa'
+          this.draw()
+        })
+    },
+
+    // "Agora não": não pergunta de novo por alguns dias (PROMPT_SNOOZE_MS).
+    declineMap() {
+      savePrompt('later')
+      this.state.mapPrompt = false
+      this.draw()
     },
 
     setView(view, favorites) {
@@ -182,7 +283,8 @@ Page(
         color: c.bg
       })
 
-      this.text({ x: px(100), y: px(46), w: DEVICE_WIDTH - 2 * px(100), h: px(30), text: greeting(new Date().getHours()), text_size: px(22), color: c.muted })
+      // Saudação (ou, enquanto o mapa baixa, o recado do mapa).
+      this.text({ x: px(100), y: px(46), w: DEVICE_WIDTH - 2 * px(100), h: px(30), text: this.state.mapNote || greeting(new Date().getHours()), text_size: px(22), color: c.muted })
       this.text({ x: px(70), y: px(74), w: DEVICE_WIDTH - 2 * px(70), h: px(44), text: 'Cadê o Busão', text_size: px(34), color: c.title })
       // Barrinha em segmentos do gradiente (verde-azulado até o coral) sob o título.
       const barW = BAR_COLORS.length * BAR_SEG_W + (BAR_COLORS.length - 1) * BAR_GAP
@@ -197,6 +299,8 @@ Page(
         this.drawOffline()
       } else if (favorites.length === 0) {
         this.drawEmpty()
+      } else if (this.state.mapPrompt) {
+        this.drawMapPrompt()
       } else {
         this.drawList(favorites)
       }
@@ -228,6 +332,40 @@ Page(
       this.text({ x: MARGIN, y: px(288), w: CONTENT_W, h: px(34), text: 'primeiro ponto no celular.', text_size: px(24), color: c.muted })
     },
 
+    // Aviso da primeira abertura sem mapa: "Baixar o mapa de BH?".
+    drawMapPrompt() {
+      const c = this.colors()
+      this.text({ x: MARGIN, y: px(150), w: CONTENT_W, h: px(46), text: 'Baixar o mapa de BH?', text_size: px(32), color: c.text })
+      this.text({ x: MARGIN, y: px(196), w: CONTENT_W, h: px(32), text: this.mapSizeText(), text_size: px(24), color: c.muted })
+      this.text({ x: px(80), y: px(230), w: DEVICE_WIDTH - 2 * px(80), h: px(52), text: 'Ruas no mapa do ponto. Mapa © colaboradores do OpenStreetMap', text_size: px(18), color: c.muted, text_style: hmUI.text_style.WRAP })
+      this.add(hmUI.widget.BUTTON, {
+        x: px(110),
+        y: px(292),
+        w: DEVICE_WIDTH - 2 * px(110),
+        h: px(70),
+        radius: px(35),
+        text: 'Baixar',
+        text_size: px(28),
+        color: c.buttonText,
+        normal_color: c.button,
+        press_color: c.buttonPressed,
+        click_func: guard('aviso do mapa', () => this.acceptMap())
+      })
+      this.add(hmUI.widget.BUTTON, {
+        x: px(130),
+        y: px(372),
+        w: DEVICE_WIDTH - 2 * px(130),
+        h: px(56),
+        radius: px(28),
+        text: 'Agora não',
+        text_size: px(24),
+        color: c.text,
+        normal_color: c.card,
+        press_color: c.cardPressed,
+        click_func: guard('aviso do mapa', () => this.declineMap())
+      })
+    },
+
     drawOffline() {
       const c = this.colors()
       this.drawMessage('Sem conexão', 'Abra o app Zepp no celular e deixe o Bluetooth ligado.', c.error)
@@ -251,7 +389,7 @@ Page(
       const now = Date.now()
       if (now - this.state.openedAt < 800) return
       this.state.openedAt = now
-      push({ url: 'page/detail/index.page', params: JSON.stringify({ fav, theme: this.state.theme }) })
+      push({ url: 'page/detail/index.page', params: JSON.stringify({ fav, theme: this.state.theme, vibrate: this.state.vibrate }) })
     },
 
     // Os textos ficam por cima do botão do cartão; se eles segurarem o toque,

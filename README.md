@@ -12,20 +12,33 @@ Relógio (page/)  ──mensagem──▶  App Zepp no celular (app-side/)  ─�
 - `app-side/`: roda no celular. Baixa o CSV de posições GPS dos ônibus (um download serve todos os pedidos de 15 s), mede a distância de cada ônibus até o ponto **pela rua** (projetando no trajeto da linha), descarta os que já passaram e devolve ao relógio:
   - `GET_FAVORITES`: pontos salvos (com a rua do ponto abreviada, `street`) e tema;
   - `GET_SUMMARY`: o próximo ônibus de **todos** os pontos de uma vez (`{ items: [{ key, eta }] }`), para a tela inicial;
-  - `GET_BUSES`: os 3 primeiros ônibus de um ponto e o mini mapa já em pixels e já enquadrado (`zoom` opcional: escala manual em px/km).
-  Ele também lembra, entre as atualizações, quais ônibus vinham chegando, para avisar o que **acabou de passar** do ponto. Mudanças no `settingsStorage` só viram aviso ao relógio para as chaves `favorites` e `theme`.
+  - `GET_BUSES`: os 3 primeiros ônibus de um ponto e o mini mapa já em pixels e já enquadrado (`zoom` opcional: escala manual em px/km; com o mapa de ruas, `levels` e `level`);
+  - `MAP_SYNC` / `MAP_DOWNLOAD`: o relógio manda o que já tem do mapa de BH (e pede para baixar); o celular responde com o manifesto, o estado de cada tema e o que apagar. O celular avisa com `MAP_CHANGED`.
+  Ele também lembra, entre as atualizações, quais ônibus vinham chegando, para avisar o que **acabou de passar** do ponto. Mudanças no `settingsStorage` só viram aviso ao relógio para as chaves `favorites`, `theme` e `vibrate`; `mapCommand` aciona o download do mapa.
 - `page/home`: saudação pelo horário, título com a barrinha de 4 cores e um cartão por ponto (selo da linha, nome, rua abreviada e, à direita, os minutos do próximo ônibus na cor da faixa, ou "—"). Atualiza a cada 30 s; com mais de 3 pontos a tela rola.
 - `page/detail`: número grande do tempo à esquerda e mini mapa à direita. O celular escolhe a escala para caber o ônibus e o ponto (30–260 px/km, centro entre os dois) e a mantém enquanto ela servir, para o mapa não pular. Girar a **coroa** (ou tocar em **+**/**−**) muda o zoom e pede o mapa nessa escala; **tocar no mapa** volta ao automático. O rodapé mostra a escala ("zoom automático · 700 m por 100 px"). No mapa: trajeto, pontos da linha, trecho do ônibus até o seu ponto em #2E7D78 saindo exatamente do ícone, pontilhado coral sobre o caminho que o ônibus já fez (até 4 km atrás, parado no mapa) e o ícone do ônibus na cor do tempo, que desliza entre as atualizações. Quando um ônibus passa do ponto, ele aparece em cinza com "passou" e some em ~4,5 s (ease-in-out), a pílula "Esse passou · vem o próximo" fica ~3,5 s e o destaque vai para o seguinte.
-- `shared/`: lógica pura com testes (`npm test`): `bhtrans.js` (feed), `gtfs.js` e `gtfs-build.js` (pacote de dados), `polyline.js`, `route-map.js` (projeção, posição no trajeto, recorte e montagem do mini mapa, animação), `map-frame.js` (escala automática/manual, coroa, pontilhado), `passing.js` (quem passou, easing e quadros do sumiço), `summary.js` (resumo da tela inicial, cache do feed, ruas dos favoritos), `text.js` (abreviação de ruas, busca sem acento, saudação, rótulo da escala), `line-codes.js` (código NL), `settings-form.js`.
+- `shared/`: lógica pura com testes (`npm test`): `bhtrans.js` (feed), `gtfs.js` e `gtfs-build.js` (pacote de dados), `polyline.js`, `route-map.js` (projeção, posição no trajeto, recorte e montagem do mini mapa, animação), `map-frame.js` (escala automática/manual, coroa, pontilhado), `passing.js` (quem passou, easing e quadros do sumiço), `summary.js` (resumo da tela inicial, cache do feed, ruas dos favoritos), `text.js` (abreviação de ruas, busca sem acento, saudação, rótulo da escala), `line-codes.js` (código NL), `settings-form.js`, `map-tiles.js` (manifesto, blocos, mapa de bits, quais blocos cobrem o mini mapa), `map-download.js` (estado do download, fila retomável, comandos, aviso do relógio), `bus-anim.js` (animação ao longo do trajeto), `vibrate.js` (quando vibrar).
 
 > A estimativa usa a velocidade atual do ônibus (limitada entre 15 e 60 km/h). Com o ponto escolhido pela lista, a distância é medida ao longo do trajeto; com coordenadas digitadas sem sentido, é em linha reta.
 
-### Mapa da tela do ponto: nomes de ruas (a fazer)
+### Mapa de BH (ruas no mini mapa)
 
-Ainda **não há ruas** no relógio. Elas vão chegar como imagens (blocos do mapa com as ruas e os nomes já desenhados) baixadas pelo celular e enviadas ao relógio. Onde entram:
+As ruas chegam como imagens: blocos PNG de 256 px (32 cores, nomes de rua já desenhados, © colaboradores do OpenStreetMap, ODbL) publicados em `https://raw.githubusercontent.com/Petterson-Leles/cade-o-bus-mapa/main/` (`manifest.json`: projeção equiretangular, temas `dark`/`light`, níveis de 40, 80 e 160 px/km; ~3,3–3,7 MB e ~400 blocos por tema).
 
-- `app-side/index.js` → `getBuses`: escolher os blocos que cobrem o enquadramento (`frame.k` e `frame.center`) e mandar quais são e onde ficam, junto com o `map`;
-- `page/detail/index.page.js` → `drawMap()`: desenhar os blocos no `mapCanvas` com `canvas.drawImage` **antes** do trajeto (há um comentário marcando o lugar).
+- **Pedido ao usuário**: no relógio, na primeira abertura sem mapa, a tela inicial pergunta "Baixar o mapa de BH? (~3,5 MB, uma vez só)" com **Baixar** / **Agora não** (não pergunta de novo por 3 dias; a escolha fica no relógio). No celular, a seção **Mapa de BH** das configurações mostra o estado de cada tema (não baixado / baixando n de N com barrinha / pausado / pronto / erro) e tem **Baixar mapa (tamanho)**, **Baixar também o tema claro/escuro**, **Pausar** e **Apagar mapa do relógio**.
+- **Download** (`app-side/map-sync.js`): fila sequencial, um bloco por vez: baixa (`network.downloader`), converte para o formato do relógio (`image.convert`) e manda pela outbox do `TransferFile`, esperando o relógio confirmar antes do próximo. O estado fica no `settingsStorage` (`mapDownload`, um por tema, com o mapa de bits do que já foi entregue); os botões das configurações gravam `mapCommand`. Se parar no meio (relógio longe, app fechado, celular sem internet), pausa sozinho e **continua de onde parou** quando o app do relógio abre (o relógio manda o que já tem em `MAP_SYNC`).
+- **Relógio**: `app.js` recebe os arquivos (inbox do `TransferFile`, via `onReceivedFile` da zml) e os guarda em `data://map/<tema>-<k>-<x>_<y>.png`; o registro fica no `LocalStorage` (permissão `device:os.local_storage`). As páginas não podem definir `onReceivedFile` (a zml apaga os ouvintes do inbox quando uma página com ele fecha).
+- **Desenho** (`page/detail`): com o mapa do tema pronto, o zoom usa só os níveis dos blocos (40/80/160 px **físicos** por km = 41,2/82,4/164,8 px de design no Active 3): o automático escolhe o maior nível que enquadra ônibus e ponto; a coroa (um passo a cada ~15°) e +/− trocam de nível; tocar no mapa volta ao automático. O celular manda o nível e o centro do enquadramento; `shared/map-tiles.js` calcula quais blocos cobrem o círculo e onde ficam (até 4 IMG recortados ao quadrado do mapa com `pos_x`/`pos_y`), atrás do trajeto. Por cima dos blocos vai uma máscara (`assets/common.r/map/mask-<tema>.png`, gerada por `npm run build:masks`: anel na cor do fundo com o centro transparente) que esconde os cantos fora do círculo. Sem mapa, tudo funciona como antes (escala livre 30–260 px/km).
+
+### Vibração
+
+Com a tela do ponto aberta, o relógio vibra (`Vibrator` de `@zos/sensor`): curta quando o próximo ônibus entra em "já já" (≤ 5 min), longa quando entra em "chegando: corre!" (≤ 2 min) e duas curtas quando ele passa pelo ponto. Cada aviso uma vez por veículo (volta a valer se o tempo subir 3 min acima do limiar); a primeira leitura ao abrir a tela não vibra. Interruptor **Vibrar no relógio** nas configurações (padrão ligado). Lógica em `shared/vibrate.js`.
+
+> **Com o app fechado o relógio não vibra**: o aviso só existe enquanto a tela do ponto está aberta. Avaliar depois alarmes/notificações do sistema para avisar com o app fechado.
+
+### Ônibus no trajeto e variantes da linha
+
+O pacote de dados guarda, além do trajeto mais usado, **todas as variantes** (outros shapes do GTFS) de cada linha e sentido, com a sequência de pontos de cada uma (até 8 por sentido). O side service usa só as que passam pelo ponto do usuário e encaixa cada ônibus na variante em que ele está (a mais perto, até 150 m, que ainda chega ao ponto); ônibus numa variante que não passa pelo ponto sai da lista. O mapa desenha a variante do ônibus em destaque. O ícone fica sempre sobre o trajeto (também quando está fora do círculo: anda pelo trajeto até a borda) e toda animação anda ao longo da polyline: o deslizamento a cada ~150 ms pelo tempo real decorrido e a correção suave (~0,9 s, ease-out) quando chega posição nova interpolam a distância ao longo da rota, nunca x/y em linha reta (`shared/bus-anim.js`); só pula direto acima de 80 px de diferença. Os trajetos são simplificados com 5 m (≈ 1 px na maior escala).
 
 ### Diferenças para o protótipo (limites do Zepp OS)
 
@@ -46,16 +59,17 @@ O pacote gerado fica em `data/` (vai para o repositório; o zip original não):
 
 | Arquivo | Conteúdo | Tamanho |
 | --- | --- | --- |
-| `data/gtfs-index.js` | 302 linhas, sentidos (headsign mais comum), sequência de pontos de uma viagem representativa e tabela de 9.044 pontos (id, nome, lat/lon em inteiros 1e5) | ~640 KB (gzip ~175 KB) |
-| `data/gtfs-shapes.js` | trajeto mais usado de cada linha e sentido, simplificado (Douglas-Peucker 8 m) e em polyline codificada | ~165 KB (gzip ~115 KB) |
+| `data/gtfs-index.js` | 302 linhas, sentidos (headsign mais comum), sequência de pontos de uma viagem representativa e tabela de 9.591 pontos (id, nome, lat/lon em inteiros 1e5) | ~670 KB (gzip ~180 KB) |
+| `data/gtfs-shapes.js` | trajeto mais usado de cada linha e sentido e as variantes (outros shapes, com seus pontos), simplificados (Douglas-Peucker 5 m) e em polyline codificada | ~630 KB (gzip ~350 KB) |
 
-O side service importa os dois; a tela de configurações importa só o índice (ela é um bundle JS comum, sem `eval`, então lê o pacote direto sem depender do side service). O relógio não recebe o pacote: só uns 200–400 bytes de pixels por atualização. O `.zab` fica com ~1,5 MB.
+O side service importa os dois; a tela de configurações importa só o índice (ela é um bundle JS comum, sem `eval`, então lê o pacote direto sem depender do side service). O relógio não recebe o pacote: só uns 200–400 bytes de pixels por atualização. O `.zab` fica com ~2,5 MB (o celular leva as variantes; no relógio só a máscara do mapa, ~55 KB por tema, e os blocos baixados depois).
 
 Para atualizar quando sair um GTFS novo:
 
 ```bash
 # coloque o zip em data-src/gtfs-bh.zip (ignorado pelo git)
 npm run build:data   # lê o zip em streaming (~10 s) e reescreve data/
+npm run build:masks  # máscaras do círculo do mapa (assets/common.r/map/)
 ```
 
 ## Código da linha (coluna NL)

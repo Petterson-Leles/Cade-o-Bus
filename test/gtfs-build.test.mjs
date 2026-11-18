@@ -137,3 +137,27 @@ test('toModule gera um módulo ES com comentário', () => {
   const text = toModule({ a: 1 }, 'linha 1\nlinha 2')
   assert.equal(text, '// linha 1\n// linha 2\nexport default {"a":1}\n')
 })
+
+test('variantes: outros shapes do sentido com seus pontos, lidos por lineVariants', async () => {
+  const { lineVariants } = await import('../shared/gtfs.js')
+  const f = fixture()
+  // S9 (t2) é variante de R1|0, com sequência própria.
+  f.shapes.set('S9', [[-19.9, -43.95], [-19.91, -43.945], [-19.9, -43.94]])
+  const p = f.patterns.get('R1|0')
+  assert.deepEqual(p.variants.map((v) => [v.key, v.shapeId, v.candidateTrips]), [['R1|0#S9', 'S9', ['t2']]])
+  f.stopSeqs.set('R1|0#S9', ['100', '400', '200'])
+  const { index, shapes, stats } = buildPackage(f)
+  assert.equal(stats.variants, 1)
+  // O ponto 400 entra na tabela (é usado pela variante).
+  assert.ok(index.stops.id.includes('400'))
+  const idx = JSON.parse(JSON.stringify(index))
+  const shp = JSON.parse(JSON.stringify(shapes))
+  const vs = lineVariants(shp, idx, '9250', 0)
+  assert.equal(vs.length, 2)
+  assert.equal(vs[0].main, true)
+  assert.equal(vs[1].main, false)
+  assert.deepEqual(vs[1].stops.map((s) => s.id), ['100', '400', '200'])
+  assert.equal(vs[1].shape.length, 3)
+  // Pacote antigo (sem variants): só o principal.
+  assert.equal(lineVariants({ shapes: shp.shapes }, idx, '9250', 0).length, 1)
+})

@@ -84,3 +84,41 @@ test('dotsAlong: bolinhas espaçadas pelo caminho, com limite', () => {
   assert.deepEqual(dotsAlong([[1, 2]]), [])
   assert.deepEqual(dotsAlong(null), [])
 })
+
+test('níveis fixos do mapa de ruas: automático escolhe o maior que enquadra', async () => {
+  const { parseLevels, parseLevelIndex, chooseLevelFrame } = await import('../shared/map-frame.js')
+  const levels = [41.2, 82.4, 164.81]
+  assert.deepEqual(parseLevels([41.2, 82.4, 164.81]), levels)
+  assert.equal(parseLevels([80, 40]), null)
+  assert.equal(parseLevels([10]), null)
+  assert.equal(parseLevels('x'), null)
+  assert.equal(parseLevelIndex(2, 3), 2)
+  assert.equal(parseLevelIndex(3, 3), null)
+  assert.equal(parseLevelIndex('', 3), null)
+  // Ônibus a 1,8 km: escala ideal ~95 px/km -> nível 82,4.
+  const f = chooseFrame({ busXY: [0, -1800], levels })
+  assert.equal(f.level, 1)
+  assert.equal(f.k, 82.4)
+  assert.equal(f.auto, true)
+  assert.ok(fitsAt(f, [0, 0]) <= MAP_VIEW_R - FRAME_ICON_R + 1)
+  assert.ok(fitsAt(f, [0, -1800]) <= MAP_VIEW_R - FRAME_ICON_R + 1)
+  // Bem perto: o maior nível. Muito longe: o menor (o ponto continua no mapa).
+  assert.equal(chooseFrame({ busXY: [0, -300], levels }).level, 2)
+  const far = chooseFrame({ busXY: [20000, 0], levels })
+  assert.equal(far.level, 0)
+  assert.ok(fitsAt(far, [0, 0]) <= MAP_VIEW_R - FRAME_ICON_R + 1)
+  // Manual: o nível pedido, centrado no ponto.
+  assert.deepEqual(chooseFrame({ busXY: [0, -1800], levels, level: 0 }), { k: 41.2, center: [0, 0], auto: false, level: 0 })
+  // Sem ônibus: o nível mais perto da escala padrão.
+  assert.equal(chooseLevelFrame({ busXY: null, levels, level: null }).level, 2)
+})
+
+test('stableFrame não mistura mapa de ruas com escala livre', () => {
+  const levels = [41.2, 82.4, 164.81]
+  const withTiles = chooseFrame({ busXY: [0, -1800], levels })
+  const free = chooseFrame({ busXY: [0, -1800] })
+  assert.equal(stableFrame(free, withTiles, [0, -1800]), withTiles)
+  assert.equal(stableFrame(withTiles, free, [0, -1800]), free)
+  // Mesmo modo, ainda cabe: mantém.
+  assert.equal(stableFrame(withTiles, chooseFrame({ busXY: [0, -1700], levels }), [0, -1700]), withTiles)
+})

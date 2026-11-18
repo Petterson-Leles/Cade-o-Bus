@@ -6,6 +6,8 @@
 import { normalizeThemeName, readThemeName } from './colors.js'
 
 export const FAVORITES_KEY = 'favorites'
+// Interruptor "Vibrar no relógio" (settingsStorage: '0' desliga; padrão ligado).
+export const VIBRATE_KEY = 'vibrate'
 export const MAX_TEXT_LEN = 30
 export const MAX_STREET_LEN = 48
 
@@ -89,23 +91,38 @@ export function removeFavorite(list, target) {
   return index < 0 ? list.slice() : list.filter((_, i) => i !== index)
 }
 
+export function readVibrate(storage) {
+  try {
+    return storage.getItem(VIBRATE_KEY) !== '0'
+  } catch (e) {
+    return true
+  }
+}
+
+export function writeVibrate(storage, on) {
+  storage.setItem(VIBRATE_KEY, on ? '1' : '0')
+}
+
 // O que o celular manda ao relógio (GET_FAVORITES e SETTINGS_CHANGED).
 export function settingsPayload(storage) {
-  return { favorites: readFavorites(storage), theme: readThemeName(storage) }
+  return { favorites: readFavorites(storage), theme: readThemeName(storage), vibrate: readVibrate(storage) }
 }
 
 // Lê a resposta no relógio. Aceita o formato antigo (só a lista de favoritos):
-// nesse caso o tema fica o atual (fallbackTheme).
-export function parseSettingsResult(result, fallbackTheme) {
+// nesse caso o tema fica o atual (fallbackTheme). vibrate: padrão ligado
+// (ou fallbackVibrate, quando a resposta não traz).
+export function parseSettingsResult(result, fallbackTheme, fallbackVibrate = true) {
+  const vib = fallbackVibrate !== false
   if (Array.isArray(result)) {
-    return { favorites: sanitizeFavorites(result), theme: normalizeThemeName(fallbackTheme) }
+    return { favorites: sanitizeFavorites(result), theme: normalizeThemeName(fallbackTheme), vibrate: vib }
   }
   if (!result || typeof result !== 'object') {
-    return { favorites: [], theme: normalizeThemeName(fallbackTheme) }
+    return { favorites: [], theme: normalizeThemeName(fallbackTheme), vibrate: vib }
   }
   return {
     favorites: sanitizeFavorites(result.favorites),
-    theme: normalizeThemeName(result.theme === undefined ? fallbackTheme : result.theme)
+    theme: normalizeThemeName(result.theme === undefined ? fallbackTheme : result.theme),
+    vibrate: typeof result.vibrate === 'boolean' ? result.vibrate : vib
   }
 }
 
@@ -118,8 +135,8 @@ export function parseDetailParams(params) {
   } catch (e) {
     data = null
   }
-  if (!data || typeof data !== 'object') return { fav: null, theme: normalizeThemeName(null) }
+  if (!data || typeof data !== 'object') return { fav: null, theme: normalizeThemeName(null), vibrate: true }
   const raw = data.fav && typeof data.fav === 'object' ? data.fav : data
   const fav = sanitizeFavorites([raw])[0] || null
-  return { fav, theme: normalizeThemeName(data.theme) }
+  return { fav, theme: normalizeThemeName(data.theme), vibrate: data.vibrate !== false }
 }

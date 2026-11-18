@@ -35,6 +35,11 @@ import { MAP_BUS_MAX_R, DEFAULT_PX_PER_KM, zoomByCrown, zoomStep } from '../../s
 import { fadeFrame, passedKey, PASS_PILL_MS } from '../../shared/passing'
 import { scaleLabel } from '../../shared/text'
 import { guard } from '../../utils/crash'
+import { tileInfo } from '../../utils/map-store'
+import { tilesForView, centerLatLon, watchTilePath, crownSteps, stepLevel, nearestLevel } from '../../shared/map-tiles'
+import { decideVibration } from '../../shared/vibrate'
+// Vibração do pulso: https://docs.zepp.com/docs/reference/device-app-api/newAPI/sensor/Vibrator/
+import { Vibrator, VIBRATOR_SCENE_SHORT_STRONG, VIBRATOR_SCENE_DURATION_LONG, VIBRATOR_SCENE_NOTIFICATION } from '@zos/sensor'
 
 const REFRESH_MS = 30 * 1000
 // Animação do ícone do ônibus: quadros curtos (ANIM_TICK_MS) com a posição
@@ -51,6 +56,10 @@ const STALE_SEC = 120
 const ZOOM_DEBOUNCE_MS = 450
 // Abaixo dessa escala os pontos da linha ficam de fora (viram poluição).
 const MIN_K_FOR_STOPS = 60
+// Blocos do mapa de ruas: o círculo (240 px de design) cabe em 2×2 blocos de 256 px.
+const MAX_TILES = 4
+// Máscara do círculo do mapa por tema (scripts/build-map-masks.mjs).
+const maskSrc = (theme) => `map/mask-${theme === 'light' ? 'light' : 'dark'}.png`
 
 // Coluna do número (esquerda) e área do mini mapa (direita), em pixels de design.
 const NUM_X = 40
@@ -88,10 +97,19 @@ Page(
       // Mantém o que a zml já colocou em this.state (ex.: messaging).
       // view guarda o que está na tela para poder repintar ao trocar o tema:
       // { kind: 'loading' } | { kind: 'status', title, detail, role } | { kind: 'data', result }.
-      const { fav, theme } = parseDetailParams(params)
+      const { fav, theme, vibrate } = parseDetailParams(params)
       const fresh = {
         fav,
         theme,
+        vibrate, // interruptor "Vibrar no relógio" das configurações
+        vibMemory: null, // shared/vibrate.js: o que já foi avisado
+        vibrator: null,
+        // Mapa de ruas baixado (utils/map-store.js tileInfo) ou null; com ele o zoom
+        // só usa os níveis dos blocos: level = índice manual (null = automático).
+        tiles: null,
+        level: null,
+        crownAcc: 0,
+        tileKeys: [], // src já posto em cada IMG de bloco (não recarrega à toa)
         timer: null,
         dotsTimer: null,
         anim: null, // { timer, src, path, speed, startedAt, fixFrom, target } (shared/bus-anim)
@@ -145,6 +163,7 @@ Page(
 
     build: guard('tela do ponto build', function () {
       if (!this.state || !Array.isArray(this.state.all)) this.onInit()
+      this.loadTiles()
       this.createWidgets()
       // Coroa digital: zoom manual do mapa (só um ouvinte por página; sai no onDestroy).
       onDigitalCrown({ callback: (key, degree) => this.onCrown(degree) })
@@ -168,6 +187,18 @@ Page(
       // Fica embaixo dos textos da coluna da esquerda, que podem encostar na borda.
       w.mapRing = this.circle(MAP_RING_R, c.divider)
       w.mapInner = this.circle(MAP_RING_R - 2, c.bg)
+      // Ruas (mapa de BH baixado): até MAX_TILES blocos de 256 px atrás do trajeto,
+      // cada IMG recortado ao quadrado do mapa (w/h e pos_x/pos_y, doc do IMG:
+      // https://docs.zepp.com/docs/reference/device-app-api/newAPI/ui/widget/IMG/),
+      // e por cima uma máscara (anel na cor do fundo, centro transparente) que
+      // esconde os cantos dos blocos fora do círculo. Começam escondidos.
+      w.tiles = []
+      for (let i = 0; i < MAX_TILES; i++) {
+        w.tiles.push(this.widget(hmUI.widget.IMG, { x: px(CANVAS_X), y: px(CANVAS_Y), w: px(CANVAS_SIZE), h: px(CANVAS_SIZE), src: maskSrc(this.state.theme) }))
+      }
+      w.mask = this.widget(hmUI.widget.IMG, { x: px(CANVAS_X), y: px(CANVAS_Y), w: px(CANVAS_SIZE), h: px(CANVAS_SIZE), auto_scale: true, src: maskSrc(this.state.theme) })
+      this.setVisible([...w.tiles, w.mask], false)
+      this.state.tileKeys = []
       w.mapCanvas = this.widget(hmUI.widget.CANVAS, { x: px(CANVAS_X), y: px(CANVAS_Y), w: px(CANVAS_SIZE), h: px(CANVAS_SIZE) })
       // Tocar no mapa volta ao zoom automático.
       w.mapCanvas.addEventListener(hmUI.event.CLICK_UP, () => this.backToAuto())
@@ -259,12 +290,41 @@ Page(
     // timer seguem iguais (show() usa sempre state.w atual).
     onCall: guard('tela do ponto onCall', function (data) {
       if (!data || this.state.destroyed) return
+      if (data.method === 'MAP_CHANGED') {
+        // Mapa terminou de chegar ou foi apagado: troca o modo do zoom na próxima consulta.
+        if (this.loadTiles()) this.refreshNow()
+        return
+      }
       if (data.method !== 'SETTINGS_CHANGED' && data.method !== 'FAVORITES_CHANGED') return
-      const { theme } = parseSettingsResult(data.result, this.state.theme)
+      const { theme, vibrate } = parseSettingsResult(data.result, this.state.theme, this.state.vibrate)
+      this.state.vibrate = vibrate
       if (theme === this.state.theme) return
       this.state.theme = theme
+      this.loadTiles()
       this.repaint()
     }),
+
+    // Lê se o mapa do tema atual está pronto no relógio. Devolve true se o modo mudou
+    // (aí o zoom volta ao automático).
+    loadTiles() {
+      const s = this.state
+      let info = null
+      try {
+        info = tileInfo(s.theme, px(1000) / 1000)
+      } catch (e) {
+        info = null
+      }
+      if (info && info.levels.length === 0) info = null
+      const before = s.tiles ? s.tiles.theme : ''
+      s.tiles = info
+      const changed = (info ? info.theme : '') !== before
+      if (changed) {
+        s.level = null
+        s.zoom = null
+        s.crownAcc = 0
+      }
+      return changed
+    },
 
     repaint() {
       const view = this.state.view
@@ -305,13 +365,50 @@ Page(
     },
 
     onCrown(degree) {
-      if (this.state.destroyed || !this.state.hasData || !this.state.map) return
+      const s = this.state
+      if (s.destroyed || !s.hasData || !s.map) return
+      if (s.tiles) {
+        // Mapa de ruas: a coroa troca de nível (um passo a cada ~15°).
+        const r = crownSteps(s.crownAcc, degree)
+        s.crownAcc = r.acc
+        if (r.steps !== 0) this.setLevel(stepLevel(this.currentLevel(), r.steps, s.tiles.levels.length))
+        return
+      }
       this.setZoom(zoomByCrown(this.currentK(), degree))
     },
 
     zoomBy(dir) {
-      if (this.state.destroyed || !this.state.hasData || !this.state.map) return
+      const s = this.state
+      if (s.destroyed || !s.hasData || !s.map) return
+      if (s.tiles) {
+        this.setLevel(stepLevel(this.currentLevel(), dir > 0 ? 1 : -1, s.tiles.levels.length))
+        return
+      }
       this.setZoom(zoomStep(this.currentK(), dir))
+    },
+
+    // Nível em uso (manual ou o que o celular escolheu no automático).
+    currentLevel() {
+      const s = this.state
+      if (s.level !== null) return s.level
+      if (s.map && s.map.level !== null) return s.map.level
+      return nearestLevel(s.tiles.levels, this.currentK())
+    },
+
+    // Nível manual (mapa de ruas): mostra a escala na hora e pede o mapa depois.
+    setLevel(level) {
+      const s = this.state
+      if (!s.tiles || level === s.level) return
+      s.level = level
+      this.setFooter(scaleLabel(s.tiles.levels[level], false))
+      if (s.zoomTimer) clearTimeout(s.zoomTimer)
+      s.zoomTimer = setTimeout(
+        guard('zoom do mapa', () => {
+          s.zoomTimer = null
+          this.refreshNow()
+        }),
+        ZOOM_DEBOUNCE_MS
+      )
     },
 
     // Zoom manual: mostra a escala nova na hora e pede o mapa quando a coroa parar.
@@ -329,8 +426,10 @@ Page(
 
     backToAuto() {
       const s = this.state
-      if (s.destroyed || s.zoom === null) return
+      if (s.destroyed || (s.zoom === null && s.level === null)) return
       s.zoom = null
+      s.level = null
+      s.crownAcc = 0
       if (s.zoomTimer) clearTimeout(s.zoomTimer)
       s.zoomTimer = null
       this.setFooter('zoom automático')
@@ -464,8 +563,55 @@ Page(
     // ---- Mapa ----
 
     clearMap() {
-      const canvas = this.state.w.mapCanvas
+      const w = this.state.w
+      const canvas = w.mapCanvas
       if (canvas) canvas.clear({ x: 0, y: 0, w: px(CANVAS_SIZE), h: px(CANVAS_SIZE) })
+      if (w.tiles) this.setVisible([...w.tiles, w.mask], false)
+    },
+
+    // Blocos do mapa de ruas atrás do trajeto (só com o mapa do tema no relógio e
+    // um nível fixo no enquadramento). Posição pela projeção do manifesto
+    // (shared/map-tiles.js tilesForView), em px físicos da tela.
+    drawTiles(map) {
+      const s = this.state
+      const w = s.w
+      if (!w.tiles) return
+      const t = s.tiles
+      if (!t || !map || map.level === null || !t.compact.levels[t.theme][map.level]) {
+        this.setVisible([...w.tiles, w.mask], false)
+        return
+      }
+      const center = centerLatLon(s.fav, map.center, t.compact.m)
+      const cx = px(MAP_CX)
+      const cy = px(MAP_CY)
+      const r = px(MAP_RING_R)
+      const list = tilesForView({
+        compact: t.compact,
+        theme: t.theme,
+        level: map.level,
+        center,
+        cx,
+        cy,
+        r: px(MAP_RING_R - 2),
+        box: { x: cx - r, y: cy - r, w: 2 * r, h: 2 * r }
+      })
+      const L = t.compact.levels[t.theme][map.level]
+      w.tiles.forEach((img, i) => {
+        const tile = list[i]
+        if (!tile) {
+          img.setProperty(hmUI.prop.VISIBLE, false)
+          s.tileKeys[i] = ''
+          return
+        }
+        const src = watchTilePath(t.theme, L.k, tile.tx, tile.ty)
+        const key = `${src}|${tile.x}|${tile.y}|${tile.w}|${tile.h}|${tile.pos_x}|${tile.pos_y}`
+        if (s.tileKeys[i] !== key) {
+          img.setProperty(hmUI.prop.MORE, { x: tile.x, y: tile.y, w: tile.w, h: tile.h, pos_x: tile.pos_x, pos_y: tile.pos_y, src })
+          s.tileKeys[i] = key
+        }
+        img.setProperty(hmUI.prop.VISIBLE, true)
+      })
+      w.mask.setProperty(hmUI.prop.VISIBLE, list.length > 0)
     },
 
     // Trajeto, trecho destacado, rastro e pontos da linha no canvas; o seu ponto
@@ -476,8 +622,8 @@ Page(
       const c = this.colors()
       this.clearMap()
       const canvas = w.mapCanvas
-      // (Futuro) Ruas: blocos de imagem do mapa entram aqui, antes do trajeto,
-      // com canvas.drawImage; o celular manda quais blocos e onde (README).
+      // Ruas: blocos de imagem em widgets IMG embaixo do canvas (drawTiles).
+      this.drawTiles(map)
       const lines = (pieces, color, width) => {
         if (!pieces.length) return
         canvas.setPaint({ color, line_width: px(width) })
@@ -556,7 +702,15 @@ Page(
       s.timer = null
       const { line, lat, lon, dir, stopId } = s.fav
       const params = { line, lat, lon, dir, stopId }
-      if (s.zoom !== null) params.zoom = s.zoom
+      // O mapa pode ter terminado de chegar com a tela aberta.
+      this.loadTiles()
+      if (s.tiles) {
+        // Com o mapa de ruas, só os níveis fixos dos blocos (px de design por km).
+        params.levels = s.tiles.levels
+        if (s.level !== null) params.level = s.level
+      } else if (s.zoom !== null) {
+        params.zoom = s.zoom
+      }
       const done = () => {
         s.loading = false
         if (s.destroyed) return
@@ -565,10 +719,12 @@ Page(
         s.timer = setTimeout(() => this.refresh(), again ? 0 : REFRESH_MS)
       }
       this.request({ method: 'GET_BUSES', params })
-        .then((data) => {
-          const { result, error } = data || {}
-          this.show(result, error)
-        })
+        .then(
+          guard('tela do ponto dados', (data) => {
+            const { result, error } = data || {}
+            this.show(result, error)
+          })
+        )
         .catch(() => this.show(null, 'offline'))
         .then(done, done)
     },
@@ -602,6 +758,7 @@ Page(
         return
       }
       const c = this.colors()
+      this.vibrateFor(buses && buses[0], map)
       if (!buses || buses.length === 0) {
         if (!map) {
           this.showStatus('Uai,', 'nenhum ônibus rodando agora nessa linha.', 'text')
@@ -679,6 +836,35 @@ Page(
       }
     },
 
+    // ---- Vibração ----
+
+    // Decide (shared/vibrate.js) e vibra: curta em "já já", longa em "chegando",
+    // duas curtas quando o ônibus passa. Só com a página aberta.
+    vibrateFor(first, map) {
+      const s = this.state
+      const reading = {
+        vehicle: first ? first.vehicle : null,
+        etaMin: first ? first.etaMin : null,
+        passedKey: map && map.passed ? passedKey(map.passed) : ''
+      }
+      const { memory, alert } = decideVibration(s.vibMemory, reading)
+      s.vibMemory = memory
+      if (!alert || !s.vibrate) return
+      const mode = alert === 'now' ? VIBRATOR_SCENE_DURATION_LONG : alert === 'passed' ? VIBRATOR_SCENE_NOTIFICATION : VIBRATOR_SCENE_SHORT_STRONG
+      try {
+        if (!s.vibrator) s.vibrator = new Vibrator()
+        s.vibrator.start({ mode })
+      } catch (e) {
+        try {
+          // Forma do exemplo da doc: setMode e depois start().
+          s.vibrator.setMode(mode)
+          s.vibrator.start()
+        } catch (e2) {
+          console.log('Vibração indisponível', e2 && e2.message ? e2.message : e2)
+        }
+      }
+    },
+
     onDestroy() {
       const s = this.state
       s.destroyed = true
@@ -690,6 +876,11 @@ Page(
       this.stopAnim()
       this.stopPassed()
       offDigitalCrown()
+      try {
+        if (s.vibrator) s.vibrator.stop()
+      } catch (e) {
+        // nada
+      }
     }
   })
 )

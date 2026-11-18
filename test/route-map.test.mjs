@@ -295,3 +295,59 @@ test('buildMapPayload: rastro limitado a trailM e ônibus que passou na escala d
   assert.deepEqual(none.trail, [])
   assert.equal(none.passed, undefined)
 })
+
+test('sanitizeMapPayload: nível e centro do mapa de ruas', () => {
+  const m = sanitizeMapPayload({ level: 2, center: [123.456, -50] })
+  assert.equal(m.level, 2)
+  assert.deepEqual(m.center, [123.5, -50])
+  assert.equal(sanitizeMapPayload({ level: 9 }).level, null)
+  assert.deepEqual(sanitizeMapPayload({ center: [1e9, 0] }).center, [0, 0])
+})
+
+test('animationPath começa na projeção do ícone no destaque (segue as curvas)', () => {
+  const map = { hi: [[-50, 0, 0, 0, 0, 50]], buses: [{ x: -20, y: 1, clamped: true }] }
+  assert.deepEqual(animationPath(map), [-20, 0, 0, 0, 0, 50])
+  assert.deepEqual(animationPath({ hi: [[-50, 0, 0, 0]], buses: [{ x: -50, y: 0, clamped: false }] }), [-50, 0, 0, 0])
+  assert.deepEqual(animationPath({ hi: [[-50, 0, 0, 0]], buses: [{ x: -20, y: 30, clamped: false }] }), [])
+})
+
+test('ônibus no trajeto fora do círculo fica NO trajeto, não puxado em linha reta', async () => {
+  // Trajeto em L: vem do norte por x = -800 e vira para leste em y = 0 até o ponto.
+  const shape = [ll(-800, 3000), ll(-800, 0), ll(400, 0)]
+  const ctx = routeContext(shape, STOP)
+  const busLL = ll(-800, 2000)
+  const bus = { lat: busLL[0], lon: busLL[1] }
+  bus.route = busOnRoute(ctx, bus)
+  const map = buildMapPayload({ ctx, stop: STOP, buses: [bus], busMaxR: 80, pxPerKm: 128 })
+  const b = map.buses[0]
+  assert.equal(b.clamped, true)
+  // No trajeto: na rua x = -800 m (-102 px) não cabe; vai para y = 0, perto de r = 80.
+  assert.ok(Math.abs(b.y) <= 1, JSON.stringify(b))
+  assert.ok(Math.abs(Math.hypot(b.x, b.y) - 80) <= 1.5, JSON.stringify(b))
+})
+
+test('variantes: só as que passam pelo ponto; ônibus vai para a variante em que está', async () => {
+  const { variantsThroughStop, busOnVariants } = await import('../shared/route-map.js')
+  const stopsMain = [{ id: 'eu', lat: STOP.lat, lon: STOP.lon }]
+  // Principal: reta leste-oeste pelo ponto. Variante A: desvia pelo norte e volta
+  // (passa pelo ponto). Variante B: outra rua bem ao sul (não passa pelo ponto).
+  const main = { shape: [ll(-2000, 0), ll(1000, 0)], stops: stopsMain, main: true }
+  const viaNorte = { shape: [ll(-2000, 800), ll(-500, 800), ll(-500, 0), ll(1000, 0)], stops: stopsMain, main: false }
+  const outra = { shape: [ll(-2000, -900), ll(1000, -900)], stops: [{ id: 'x', lat: 0, lon: 0 }], main: false }
+  const vs = variantsThroughStop([main, viaNorte, outra], STOP, 'eu')
+  assert.equal(vs.length, 2)
+  assert.ok(vs[0].main)
+  // Ônibus no desvio do norte: variante 1.
+  const p = ll(-1200, 800)
+  const r = busOnVariants(vs, { lat: p[0], lon: p[1] })
+  assert.equal(r.variant, 1)
+  assert.equal(r.passed, false)
+  // Na reta principal: variante 0.
+  const q = ll(-1500, 0)
+  assert.equal(busOnVariants(vs, { lat: q[0], lon: q[1] }).variant, 0)
+  // Na rua do sul (variante que não passa pelo ponto): fora de todas -> null.
+  const z = ll(-1000, -900)
+  assert.equal(busOnVariants(vs, { lat: z[0], lon: z[1] }), null)
+  // Nenhuma passa: fica o principal.
+  assert.equal(variantsThroughStop([main], { lat: -19.5, lon: -43.5 }, null).length, 1)
+})

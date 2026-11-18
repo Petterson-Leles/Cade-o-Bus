@@ -13,7 +13,8 @@
     "description": "Mostra os ônibus de BH (BHTrans) mais próximos do seu ponto favorito."
   },
   "permissions": [
-    "data:os.device.info"
+    "data:os.device.info",
+    "device:os.local_storage"
   ],
   "runtime": {
     "apiVersion": {

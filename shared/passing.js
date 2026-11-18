@@ -32,7 +32,10 @@ export function trackPassing(prev, obs, now, { nearM = PASS_NEAR_M, maxGapMs = P
     }
     // Passou agora: estava chegando na leitura anterior e não está na contramão.
     if (o.passed && !o.wrongWay && Object.prototype.hasOwnProperty.call(before, o.vehicle)) {
-      justPassed.push({ vehicle: o.vehicle, lat: o.lat, lon: o.lon, along: o.along, at: now })
+      const item = { vehicle: o.vehicle, lat: o.lat, lon: o.lon, along: o.along, at: now }
+      // Variante do trajeto em que ele estava (along só vale nela).
+      if (Number.isInteger(o.variant)) item.variant = o.variant
+      justPassed.push(item)
     }
   })
   const kept = (prev && Array.isArray(prev.recent) ? prev.recent : []).filter(

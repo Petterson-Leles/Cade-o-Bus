@@ -335,7 +335,9 @@ export function buildMapPayload({
     }
     return { x: Math.round(x) || 0, y: Math.round(y) || 0, clamped }
   }
+  // posM: posição já calculada (metros, projeção do ponto), ex. ônibus noutra variante.
   const metersOf = (b, along) => {
+    if (b && Array.isArray(b.posM) && Number.isFinite(b.posM[0]) && Number.isFinite(b.posM[1])) return b.posM
     if (ctx && ctx.pts.length >= 2 && Number.isFinite(along)) return pointAt(ctx.pts, ctx.cum, along)
     const lat = toNum(b.lat)
     const lon = toNum(b.lon)
@@ -349,11 +351,26 @@ export function buildMapPayload({
     if (!pos || !pos.clamped || ctx.stopAlong === null) return pos
     const end = along <= ctx.stopAlong + PASSED_TOLERANCE_M ? ctx.stopAlong : ctx.total + ctx.stopAlong
     const step = Math.max(1, 2 / pxPerM)
-    for (let a = along, n = 0; a <= end && n < 4000; a += step, n++) {
+    const at = (a) => {
       const m = pointAt(ctx.pts, ctx.cum, a > ctx.total ? a - ctx.total : a)
-      const x = (m[0] - cx) * pxPerM
-      const y = (m[1] - cy) * pxPerM
-      if (Math.hypot(x, y) <= maxR) return { x: Math.round(x) || 0, y: Math.round(y) || 0, clamped: true }
+      return [(m[0] - cx) * pxPerM, (m[1] - cy) * pxPerM]
+    }
+    const inR = (a) => {
+      const p = at(a)
+      return Math.hypot(p[0], p[1]) <= maxR
+    }
+    for (let a = along, n = 0; a <= end && n < 4000; a += step, n++) {
+      if (!inR(a)) continue
+      // Refina entre o passo anterior (fora) e este (dentro): fica bem na borda.
+      let lo = Math.max(along, a - step)
+      let hi = a
+      for (let k = 0; k < 16; k++) {
+        const mid = (lo + hi) / 2
+        if (inR(mid)) hi = mid
+        else lo = mid
+      }
+      const p = at(hi)
+      return { x: Math.round(p[0]) || 0, y: Math.round(p[1]) || 0, clamped: true }
     }
     return pos
   }

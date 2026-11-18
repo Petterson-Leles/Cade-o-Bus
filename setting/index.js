@@ -5,7 +5,9 @@
 //
 // Tudo o que a tela guarda fica no settingsStorage (rascunho, mensagem, último
 // removido); o side service só avisa o relógio quando mudam "favorites" ou "theme".
-import { readFavorites, writeFavorites, newFavoriteId, removeFavorite } from '../utils/favorites'
+import { readFavorites, writeFavorites, newFavoriteId, removeFavorite, readVibrate, writeVibrate } from '../utils/favorites'
+import { readMapStates, statusText, formatBytes, makeCommand, STATUS, MAP_COMMAND_KEY, MAP_MANIFEST_KEY } from '../shared/map-download'
+import { parseManifest, MAP_ATTRIBUTION } from '../shared/map-tiles'
 import { CSS, readThemeName, writeThemeName } from '../utils/colors'
 import {
   DRAFT_FIELDS,
@@ -105,6 +107,84 @@ function themePicker(storage) {
       })
     })
   )
+}
+
+const THEME_LABEL = { dark: 'escuro', light: 'claro' }
+
+// Seção "Mapa de BH": estado e progresso de cada tema, baixar, baixar o outro
+// tema, pausar e apagar. Os botões gravam um comando no settingsStorage
+// (mapCommand) e o side service faz o trabalho (app-side/map-sync.js).
+function mapSection(storage) {
+  const states = readMapStates(storage)
+  let manifest = null
+  try {
+    const cached = JSON.parse(storage.getItem(MAP_MANIFEST_KEY) || 'null')
+    manifest = cached && parseManifest(cached.manifest)
+  } catch (e) {
+    manifest = null
+  }
+  const current = readThemeName(storage)
+  const other = current === 'dark' ? 'light' : 'dark'
+  const size = (t) => {
+    const b = manifest && manifest.themes[t] ? formatBytes(manifest.themes[t].bytes) : ''
+    return b || '~3,5 MB'
+  }
+  const send = (action, theme) => storage.setItem(MAP_COMMAND_KEY, makeCommand(action, theme))
+  const busy = (t) => states[t].status === STATUS.DOWNLOADING
+  const has = (t) => states[t].status !== STATUS.NONE || states[t].done > 0
+  const line = (t) => {
+    const st = states[t]
+    const pct = st.total > 0 ? Math.round((st.done / st.total) * 100) : 0
+    const items = [
+      Text({ style: { fontSize: '13px', color: CSS.text } }, `Tema ${THEME_LABEL[t]}: ${statusText(st)}`)
+    ]
+    if (st.total > 0 && st.status !== STATUS.READY && st.status !== STATUS.NONE) {
+      // Barrinha de progresso.
+      items.push(
+        View({ style: { height: '6px', borderRadius: '3px', background: CSS.border, marginTop: '4px' } }, [
+          View({ style: { width: `${pct}%`, height: '6px', borderRadius: '3px', background: CSS.primary } }, [])
+        ])
+      )
+    }
+    return View({ style: { marginTop: '6px' } }, items)
+  }
+  const out = [
+    Text(
+      { paragraph: true, style: { fontSize: '12px', color: CSS.muted, marginTop: '4px' } },
+      'Ruas e nomes no mini mapa da tela do ponto. O celular baixa uma vez só e manda ao relógio pelo Bluetooth (deixe o app aberto no relógio).'
+    ),
+    line(current),
+    has(other) ? line(other) : null
+  ]
+  const buttons = []
+  if (busy(current) || busy(other)) {
+    buttons.push(Button({ label: 'Pausar', style: { ...buttonStyle('transparent', CSS.primary), border: `1px solid ${CSS.primary}` }, onClick: () => send('pause', busy(current) ? current : other) }))
+  }
+  if (states[current].status !== STATUS.READY && !busy(current)) {
+    const label = states[current].done > 0 ? 'Continuar download' : `Baixar mapa (${size(current)})`
+    buttons.push(Button({ label, style: buttonStyle(CSS.primary, CSS.primaryText), onClick: () => send('download', current) }))
+  }
+  if (states[other].status !== STATUS.READY && !busy(other)) {
+    buttons.push(
+      Button({
+        label: `Baixar também o tema ${THEME_LABEL[other]} (${size(other)})`,
+        style: { ...buttonStyle('transparent', CSS.primary), border: `1px solid ${CSS.primary}` },
+        onClick: () => send('download', other)
+      })
+    )
+  }
+  if (has(current) || has(other)) {
+    buttons.push(
+      Button({
+        label: 'Apagar mapa do relógio',
+        style: { ...buttonStyle('transparent', CSS.danger), border: `1px solid ${CSS.danger}` },
+        onClick: () => send('delete', 'all')
+      })
+    )
+  }
+  out.push(View({ style: { display: 'flex', flexDirection: 'column' } }, buttons))
+  out.push(Text({ paragraph: true, style: { fontSize: '11px', color: CSS.muted, marginTop: '8px' } }, `${MAP_ATTRIBUTION} (ODbL).`))
+  return out.filter(Boolean)
 }
 
 function messageBox(message, onUndo) {
@@ -397,6 +477,13 @@ AppSettingsPage({
       Text({ paragraph: true, style: { fontSize: '13px', color: CSS.muted } }, 'Uai, é só digitar o número da linha, escolher o sentido e o ponto.'),
       sectionTitle('Tema do relógio'),
       themePicker(storage),
+      Toggle({ label: 'Vibrar no relógio', value: readVibrate(storage), onChange: (val) => writeVibrate(storage, !!val) }),
+      Text(
+        { paragraph: true, style: { fontSize: '12px', color: CSS.muted } },
+        'Com a tela do ponto aberta: curta em “já já”, longa em “chegando” e duas curtas quando o ônibus passa.'
+      ),
+      sectionTitle('Mapa de BH'),
+      ...mapSection(storage),
       sectionTitle('Novo ponto'),
       ...pick,
       ...manual,
