@@ -15,10 +15,12 @@
 //
 // Tudo o que a tela guarda fica no settingsStorage (rascunho, mensagem, último
 // removido, ponto em edição); o side service só avisa o relógio quando mudam
-// "favorites", "theme", "vibrate" ou "mapBackground".
-import { readFavorites, writeFavorites, newFavoriteId, removeFavorite, updateFavorite, readVibrate, writeVibrate, readMapBackground, writeMapBackground, MAX_TEXT_LEN } from '../utils/favorites'
-import { readMapStates, writeMapStates, applyCommandLocally, statusText, formatBytes, makeCommand, STATUS, MAP_COMMAND_KEY, MAP_MANIFEST_KEY } from '../shared/map-download'
-import { parseManifest, MAP_ATTRIBUTION } from '../shared/map-tiles'
+// "favorites", "theme" ou "vibrate".
+import { readFavorites, writeFavorites, newFavoriteId, removeFavorite, updateFavorite, readVibrate, writeVibrate, MAX_TEXT_LEN } from '../utils/favorites'
+import { readMapStates, writeMapStates, markDeleting, storedText, storedCount, makeCommand, MAP_COMMAND_KEY } from '../shared/map-download'
+import { MAP_ATTRIBUTION } from '../shared/map-tiles'
+// Sol (Claro) e lua (Escuro) do seletor de tema: SVG animado em data URI (Image).
+import { themeIcon, ICON_SIZE } from '../shared/theme-icons'
 import { cssTheme, readThemeName, writeThemeName } from '../utils/colors'
 import {
   DRAFT_FIELDS,
@@ -144,8 +146,8 @@ AppSettingsPage({
         subStyle: {
           fontSize: '16px',
           color: value ? C.text : C.muted,
-          background: C.card,
-          border: `1px solid ${C.border}`,
+          background: C.fieldBg,
+          border: `1px solid ${C.fieldBorder}`,
           borderRadius: '12px',
           padding: '11px 14px',
           minHeight: '20px',
@@ -206,7 +208,9 @@ AppSettingsPage({
 
     // ---- Relógio: tema e vibração ----
 
-    // Seletor segmentado: trilho e a opção escolhida em destaque (transição suave).
+    // Seletor segmentado: trilho e a opção escolhida em destaque (transição suave),
+    // com o sol (Claro) e a lua (Escuro): a escolhida anima (SMIL no SVG), a outra
+    // fica parada e esmaecida.
     const themePicker = () => {
       const current = readThemeName(storage)
       return View(
@@ -230,7 +234,18 @@ AppSettingsPage({
                 if (readThemeName(storage) !== opt.value) writeThemeName(storage, opt.value)
               }
             },
-            [Text({ bold: selected, align: 'center', style: { fontSize: '14px', color: selected ? C.primaryText : C.text, transition: SMOOTH } }, opt.label)]
+            [
+              View({ style: { display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'center' } }, [
+                Image({
+                  src: themeIcon(opt.value, selected),
+                  alt: opt.value === 'light' ? 'Sol' : 'Lua',
+                  width: ICON_SIZE * 0.7,
+                  height: ICON_SIZE * 0.7,
+                  style: { width: `${ICON_SIZE * 0.7}px`, height: `${ICON_SIZE * 0.7}px`, marginRight: '8px', opacity: selected ? 1 : 0.5, transition: SMOOTH }
+                }),
+                Text({ bold: selected, align: 'center', style: { fontSize: '14px', color: selected ? C.primaryText : C.text, transition: SMOOTH } }, opt.label)
+              ])
+            ]
           )
         })
       )
@@ -251,64 +266,22 @@ AppSettingsPage({
 
     // ---- Mapa de BH ----
 
+    // Mapa sob demanda: o celular guarda os blocos e manda ao relógio só os da vista
+    // aberta (app-side/map-sync.js). Aqui só a contagem e "Limpar mapa do relógio".
     const mapCard = () => {
       const states = readMapStates(storage)
-      let manifest = null
-      try {
-        const cached = JSON.parse(storage.getItem(MAP_MANIFEST_KEY) || 'null')
-        manifest = cached && parseManifest(cached.manifest)
-      } catch (e) {
-        manifest = null
-      }
-      const current = readThemeName(storage)
-      const other = current === 'dark' ? 'light' : 'dark'
-      const size = (t) => (manifest && manifest.themes[t] ? formatBytes(manifest.themes[t].bytes) : '') || '~3,5 MB'
-      // Atualiza o estado na hora (o serviço do celular pode estar parado) e deixa o
-      // comando para ele, que o executa quando estiver rodando (app-side/map-sync.js).
-      const send = (action, theme) => {
+      const clear = () => {
         clearSnack()
-        writeMapStates(storage, applyCommandLocally(readMapStates(storage), action, theme))
-        storage.setItem(MAP_COMMAND_KEY, makeCommand(action, theme))
+        // Marca na hora (o serviço do celular pode estar parado) e deixa o comando
+        // para ele, que avisa o relógio (apaga quando o app abrir no relógio).
+        writeMapStates(storage, markDeleting(readMapStates(storage)))
+        storage.setItem(MAP_COMMAND_KEY, makeCommand('delete', 'all'))
       }
-      const busy = (t) => states[t].status === STATUS.DOWNLOADING
-      const has = (t) => states[t].status !== STATUS.NONE || states[t].done > 0
-      const line = (t) => {
-        const st = states[t]
-        const pct = st.total > 0 ? Math.round((st.done / st.total) * 100) : 0
-        const items = [Text({ style: { fontSize: '14px', color: C.text } }, `Tema ${THEME_LABEL[t]}: ${statusText(st)}`)]
-        if (st.total > 0 && st.status !== STATUS.READY && st.status !== STATUS.NONE) {
-          items.push(
-            View({ style: { height: '4px', borderRadius: '2px', background: C.track, marginTop: '6px' } }, [
-              View({ style: { width: `${pct}%`, height: '4px', borderRadius: '2px', background: C.primary, transition: 'width 300ms ease' } }, [])
-            ])
-          )
-        }
-        return View({ style: { marginTop: '10px' } }, items)
-      }
-      const actions = []
-      if (states[current].status !== STATUS.READY && !busy(current)) {
-        actions.push(primaryButton(states[current].done > 0 ? 'Continuar download' : `Baixar mapa (${size(current)})`, () => send('download', current)))
-      }
-      const links = []
-      if (busy(current) || busy(other)) links.push(link('Pausar', () => send('pause', busy(current) ? current : other)))
-      if (states[other].status !== STATUS.READY && !busy(other)) links.push(link(`Baixar também o tema ${THEME_LABEL[other]} (${size(other)})`, () => send('download', other)))
-      if (has(current) || has(other)) links.push(link('Apagar do relógio', () => send('delete', 'all'), C.remove))
-      const bgOn = readMapBackground(storage)
+      const deleting = Object.keys(states).some((t) => states[t].deleting)
       return card([
-        small(
-          bgOn
-            ? 'Ruas e nomes no mini mapa da tela do ponto. O celular baixa uma vez só e manda ao relógio pelo Bluetooth.'
-            : 'Ruas e nomes no mini mapa da tela do ponto. O celular baixa uma vez só e manda ao relógio pelo Bluetooth; o download só anda com o Cadê o Busão aberto no relógio.'
-        ),
-        line(current),
-        has(other) ? line(other) : null,
-        ...actions,
-        links.length > 0 ? View({ style: { display: 'flex', flexDirection: 'row', flexWrap: 'wrap', marginTop: '8px', columnGap: '14px' } }, links) : null,
-        View({ style: { height: '1px', background: C.border, margin: '14px 0 4px' } }, []),
-        Toggle({ label: 'Baixar com a tela desligada (experimental)', value: bgOn, onChange: (val) => { clearSnack(); writeMapBackground(storage, !!val) } }),
-        small(
-          'O relógio continua recebendo o mapa com a tela apagada ou o app fechado (serviço em segundo plano; para sozinho ao terminar, em 30 min ou sem progresso por 5 min). Gasta mais bateria do relógio e do celular. Na primeira vez o relógio pede permissão; se você negar, ele mantém a tela acesa como antes. O app Zepp precisa ficar aberto ou em segundo plano no celular.'
-        ),
+        Text({ style: { fontSize: '14px', color: C.text } }, `Mapa: ${storedText(states).replace(/^Ruas/, 'ruas')}`),
+        small('Abra um ponto no relógio e as ruas em volta chegam do celular em segundos. O relógio guarda os blocos usados mais recentemente.', { marginTop: '6px' }),
+        !deleting && storedCount(states) > 0 ? View({ style: { display: 'flex', flexDirection: 'row', marginTop: '8px' } }, [link('Limpar mapa do relógio', clear, C.remove)]) : null,
         small(`${MAP_ATTRIBUTION} (ODbL).`, { fontSize: '11px', marginTop: '10px' })
       ])
     }

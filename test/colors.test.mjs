@@ -72,8 +72,9 @@ test('paleta Pôr do sol nos papéis certos', () => {
     assert.equal(t.title, t.text)
   }
   assert.equal(THEMES.dark.text, 0xf3e3c3)
-  assert.equal(THEMES.dark.muted, 0x9aa5a8)
-  assert.equal(THEMES.dark.divider, 0x2a3540)
+  assert.equal(THEMES.dark.muted, 0xb4bec2)
+  assert.equal(THEMES.dark.divider, 0x46525e)
+  assert.equal(THEMES.dark.route, 0x8593a0)
   assert.equal(THEMES.dark.error, 0xf07a60)
   assert.equal(THEMES.light.text, 0x2b3440)
   assert.equal(THEMES.light.divider, 0xe3d9c6)
@@ -170,12 +171,52 @@ test('contraste legível na tela de configurações nos dois temas (CSS_THEMES)'
     }
   }
   assert.equal(CSS_THEMES.dark.bg, '#141A21')
-  assert.equal(CSS_THEMES.dark.card, '#1D252D')
-  assert.equal(CSS_THEMES.dark.accentText, '#3E9C95')
+  assert.equal(CSS_THEMES.dark.card, '#232D37')
+  assert.equal(CSS_THEMES.dark.accentText, '#4AAAA2')
   assert.equal(cssTheme('light'), CSS_THEMES.light)
   assert.equal(cssTheme('roxo'), CSS_THEMES.dark)
   assert.equal(cssTheme(memoryStorage({ [THEME_KEY]: 'light' })), CSS_THEMES.light)
   assert.equal(cssTheme(memoryStorage()), CSS_THEMES.dark)
+})
+
+test('tema escuro: elementos gráficos ≥ 3:1 e textos ≥ 4,5:1 onde ficam (relógio)', () => {
+  const t = THEMES.dark
+  const graphic = [
+    ['route', 'bg'], // trajeto no mapa
+    ['ring', 'bg'], // anel do mapa
+    ['muted', 'bg'], // pontos/bolinhas do mapa
+    ['cardEdge', 'card'], // borda do cartão
+    ['cardEdge', 'bg'],
+    ['control', 'bg'], // botões +/−
+    ['button', 'bg']
+  ]
+  for (const [fg, bg] of graphic) {
+    const r = contrast(t[fg], t[bg])
+    assert.ok(r >= 3, `dark ${fg}/${bg}: ${r.toFixed(2)}`)
+  }
+  for (const [fg, bg] of [['text', 'card'], ['muted', 'card'], ['text', 'cardPressed'], ['muted', 'cardPressed']]) {
+    const r = contrast(t[fg], t[bg])
+    assert.ok(r >= 4.5, `dark ${fg}/${bg}: ${r.toFixed(2)}`)
+  }
+  // "+"/"−" grandes (28 px) sobre o botão: texto grande, 3:1.
+  assert.ok(contrast(t.text, t.control) >= 3)
+  assert.ok(t.muted >= 0xb4bec2 && t.ring >= 0xb4bec2)
+})
+
+test('tema escuro: elementos gráficos ≥ 3:1 e textos ≥ 4,5:1 (celular)', async () => {
+  const { CSS_THEMES } = await import('../utils/colors.js')
+  const t = CSS_THEMES.dark
+  for (const [fg, bg] of [['border', 'card'], ['border', 'cardSoft'], ['border', 'bg'], ['fieldBorder', 'fieldBg'], ['fieldBorder', 'card'], ['railLine', 'card']]) {
+    const r = contrast(cssHex(t[fg]), cssHex(t[bg]))
+    assert.ok(r >= 3, `dark ${fg}/${bg}: ${r.toFixed(2)}`)
+  }
+  for (const [fg, bg] of [['text', 'fieldBg'], ['muted', 'fieldBg'], ['muted', 'card'], ['muted', 'cardSoft']]) {
+    const r = contrast(cssHex(t[fg]), cssHex(t[bg]))
+    assert.ok(r >= 4.5, `dark ${fg}/${bg}: ${r.toFixed(2)}`)
+  }
+  assert.equal(t.muted, '#B4BEC2')
+  assert.equal(t.fieldBg, '#1B232B')
+  assert.equal(t.cardSoft, '#2A3541')
 })
 
 test('readThemeName lê e valida o settingsStorage', () => {

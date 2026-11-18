@@ -5,9 +5,9 @@
 // coroa (ou tocar em +/−) pede o mapa noutra escala e tocar no mapa volta ao
 // automático. Atualiza 30 s após cada resposta.
 //
-// Nomes de ruas: ainda não há ruas no relógio. Elas vão entrar como imagens
-// (blocos do mapa baixados pelo celular) desenhadas no mapCanvas antes do
-// trajeto, em drawMap(); ver README, seção "Mapa da tela do ponto".
+// Ruas (mapa sob demanda): o relógio manda junto do pedido o que já tem do mapa
+// (bits) e o celular envia na hora só os blocos que cobrem a vista (1–4); a tela
+// desenha os que já tem e relê a cada 1,5 s enquanto faltam (drawTiles).
 import * as hmUI from '@zos/ui'
 import { px } from '@zos/utils'
 import { onDigitalCrown, offDigitalCrown } from '@zos/interaction'
@@ -35,8 +35,12 @@ import { MAP_BUS_MAX_R, DEFAULT_PX_PER_KM, zoomByCrown, zoomStep } from '../../s
 import { fadeFrame, passedKey, PASS_PILL_MS } from '../../shared/passing'
 import { scaleLabel } from '../../shared/text'
 import { guard } from '../../utils/crash'
-import { tileInfo } from '../../utils/map-store'
+import { tileInfo, touchTiles, saveManifest, canReceiveFiles } from '../../utils/map-store'
 import { tilesForView, centerLatLon, watchTilePath, crownSteps, stepLevel, nearestLevel, hasBit } from '../../shared/map-tiles'
+import { buildDemandParams, pendingCount, DEMAND_POLL_MS, DEMAND_POLL_MAX_MS } from '../../shared/map-demand'
+// Sem conexão / celular sem internet / BHTrans fora do ar (shared/conn-errors.js).
+import { ERR, parseErrorField, requestFailureCode, errorScreen } from '../../shared/conn-errors'
+import { drawErrorScreen, startRetry, stopRetry, isBleConnected } from '../../utils/conn-screen'
 import { decideVibration } from '../../shared/vibrate'
 // Horário de aviso do ponto: só vibra dentro da janela (shared/schedule.js).
 import { latestAlert, QUIET_NOTE } from '../../shared/schedule'
@@ -99,7 +103,8 @@ Page(
       // Estado próprio de cada abertura da página (não reaproveita o objeto do módulo).
       // Mantém o que a zml já colocou em this.state (ex.: messaging).
       // view guarda o que está na tela para poder repintar ao trocar o tema:
-      // { kind: 'loading' } | { kind: 'status', title, detail, role } | { kind: 'data', result }.
+      // { kind: 'loading' } | { kind: 'status', title, detail, role } | { kind: 'data', result }
+      // | { kind: 'error', code } (tela com imagem de shared/conn-errors.js).
       const { fav, theme, master, fromAlarm } = parseDetailParams(params)
       const fresh = {
         fav,
@@ -110,12 +115,16 @@ Page(
         vibMemory: fromAlarm ? { vehicle: null, level: 0, passed: [] } : null,
         quiet: false, // fora da janela do ponto: rodapé "avisos desligados agora"
         vibrator: null,
-        // Mapa de ruas baixado (utils/map-store.js tileInfo) ou null; com ele o zoom
-        // só usa os níveis dos blocos: level = índice manual (null = automático).
+        // Mapa de ruas (utils/map-store.js tileInfo: manifesto e bits do cache) ou null;
+        // com ele o zoom só usa os níveis dos blocos: level = índice manual (null = automático).
         tiles: null,
         level: null,
         crownAcc: 0,
         tileKeys: [], // src já posto em cada IMG de bloco (não recarrega à toa)
+        tileTouch: '', // blocos da vista já marcados como usados (LRU)
+        tilePoll: null, // { timer, since }: relê o cache enquanto faltam blocos da vista
+        errorWidgets: [], // tela de erro de conexão (utils/conn-screen.js)
+        retry: null,
         timer: null,
         dotsTimer: null,
         anim: null, // { timer, src, path, speed, startedAt, fixFrom, target } (shared/bus-anim)
@@ -192,7 +201,7 @@ Page(
 
       // Mapa (direita): anel fino, trajeto no canvas, marcadores por cima.
       // Fica embaixo dos textos da coluna da esquerda, que podem encostar na borda.
-      w.mapRing = this.circle(MAP_RING_R, c.divider)
+      w.mapRing = this.circle(MAP_RING_R, c.ring)
       w.mapInner = this.circle(MAP_RING_R - 2, c.bg)
       // Ruas (mapa de BH baixado): até MAX_TILES blocos de 256 px atrás do trajeto,
       // cada IMG recortado ao quadrado do mapa (w/h e pos_x/pos_y, doc do IMG:
@@ -247,7 +256,7 @@ Page(
           text,
           text_size: px(28),
           color: c.text,
-          normal_color: c.divider,
+          normal_color: c.control,
           press_color: c.route,
           click_func: () => this.zoomBy(dir)
         })
@@ -348,8 +357,10 @@ Page(
       this.state.busRemain = null
       this.state.all.forEach((x) => hmUI.deleteWidget(x))
       this.state.all = []
+      this.state.errorWidgets = []
       this.createWidgets()
       if (view.kind === 'data') this.show(view.result, null)
+      else if (view.kind === 'error') this.showError(view.code)
       else if (view.kind === 'status') this.showStatus(view.title, view.detail, view.role)
       else this.showLoading()
       this.setFooter(footer)
@@ -588,11 +599,10 @@ Page(
       const s = this.state
       const w = s.w
       if (!w.tiles) return
-      // Mapa ainda chegando: relê de tempos em tempos quais blocos já estão no relógio.
-      if (s.tiles && !s.tiles.complete && Date.now() - s.tiles.at > 10000) this.loadTiles()
       const t = s.tiles
       if (!t || !map || map.level === null || !t.compact.levels[t.theme][map.level]) {
         this.setVisible([...w.tiles, w.mask], false)
+        this.stopTilePoll()
         return
       }
       const center = centerLatLon(s.fav, map.center, t.compact.m)
@@ -625,7 +635,47 @@ Page(
         }
         img.setProperty(hmUI.prop.VISIBLE, true)
       })
-      w.mask.setProperty(hmUI.prop.VISIBLE, list.length > 0)
+      w.mask.setProperty(hmUI.prop.VISIBLE, list.some((tile) => hasBit(t.have, tile.i)))
+      // Blocos na tela vão para o fim do LRU (o cache apaga os usados há mais tempo).
+      const shown = list.filter((tile) => hasBit(t.have, tile.i)).map((tile) => tile.i)
+      const touchKey = `${t.theme}|${shown.join(',')}`
+      if (shown.length > 0 && touchKey !== s.tileTouch) {
+        s.tileTouch = touchKey
+        try {
+          touchTiles(t.theme, shown)
+        } catch (e) {
+          // sem LRU: segue
+        }
+      }
+      // Faltam blocos da vista: o celular está mandando; relê o cache até chegarem.
+      if (pendingCount(list, t.have) > 0) this.startTilePoll()
+      else this.stopTilePoll()
+    },
+
+    startTilePoll() {
+      const s = this.state
+      if (s.destroyed) return
+      if (s.tilePoll) return
+      const poll = { timer: null, since: Date.now() }
+      s.tilePoll = poll
+      poll.timer = setInterval(
+        guard('blocos do mapa', () => {
+          if (s.destroyed || s.tilePoll !== poll) return
+          if (Date.now() - poll.since > DEMAND_POLL_MAX_MS) {
+            this.stopTilePoll()
+            return
+          }
+          this.loadTiles()
+          if (s.view.kind === 'data' && s.map) this.drawTiles(s.map)
+        }),
+        DEMAND_POLL_MS
+      )
+    },
+
+    stopTilePoll() {
+      const s = this.state
+      if (s.tilePoll && s.tilePoll.timer) clearInterval(s.tilePoll.timer)
+      s.tilePoll = null
     },
 
     // Trajeto, trecho destacado, rastro e pontos da linha no canvas; o seu ponto
@@ -689,9 +739,61 @@ Page(
       }, DOTS_MS)
     },
 
+    // Tela de erro com imagem (sem conexão / celular sem internet / BHTrans fora do
+    // ar). Sem conexão: confere o Bluetooth a cada 3 s e pede de novo na volta; os
+    // outros dois tentam de novo na próxima consulta (30 s). "Tentar de novo": já.
+    showError(code) {
+      const s = this.state
+      if (s.destroyed) return
+      const c = errorScreen(code) ? code : ERR.NO_BLE
+      if (s.view.kind === 'error' && s.view.code === c && s.errorWidgets.length > 0) return
+      this.showStatus('', '', 'text')
+      this.setVisible([s.w.statusTitle, s.w.statusDetail], false)
+      this.stopTilePoll()
+      this.setFooter('')
+      s.view = { kind: 'error', code: c }
+      s.errorWidgets = drawErrorScreen((type, opts) => this.widget(type, opts), {
+        code: c,
+        theme: s.theme,
+        colors: this.colors(),
+        onRetry: () => this.refreshNow()
+      })
+      stopRetry(s.retry)
+      s.retry = null
+      if (errorScreen(c).retry === 'ble') {
+        s.retry = startRetry(c, () => {
+          s.retry = null
+          this.refreshNow()
+        })
+      }
+    },
+
+    hideError() {
+      const s = this.state
+      stopRetry(s.retry)
+      s.retry = null
+      if (s.errorWidgets.length === 0) return
+      s.errorWidgets.forEach((x) => {
+        hmUI.deleteWidget(x)
+        const i = s.all.indexOf(x)
+        if (i >= 0) s.all.splice(i, 1)
+      })
+      s.errorWidgets = []
+    },
+
+    // zml: o Bluetooth mudou (BasePage liga a messaging.onBleChanged).
+    onBleChanged: guard('tela do ponto bluetooth', function () {
+      const s = this.state
+      if (!s || s.destroyed) return
+      const on = isBleConnected()
+      if (on && s.view.kind === 'error' && s.view.code === ERR.NO_BLE) this.refreshNow()
+      else if (!on) this.showError(ERR.NO_BLE)
+    }),
+
     // role: 'text' ou 'error' (papel de cor do tema atual).
     showStatus(title, detail, role) {
       const w = this.state.w
+      this.hideError()
       this.state.view = { kind: 'status', title, detail, role }
       this.stopDots()
       this.state.hasData = false
@@ -725,6 +827,17 @@ Page(
       } else if (s.zoom !== null) {
         params.zoom = s.zoom
       }
+      // Mapa sob demanda: o que o relógio tem do tema (bits), o raio do mapa em px
+      // físicos e a escala, para o celular mandar só os blocos que faltam na vista.
+      if (canReceiveFiles()) {
+        params.tile = buildDemandParams({
+          theme: s.theme,
+          have: s.tiles ? s.tiles.have : '',
+          r: px(MAP_RING_R - 2),
+          scale: px(1000) / 1000,
+          mv: s.tiles ? s.tiles.tag : ''
+        })
+      }
       const done = () => {
         s.loading = false
         if (s.destroyed) return
@@ -732,20 +845,30 @@ Page(
         s.again = false
         s.timer = setTimeout(() => this.refresh(), again ? 0 : REFRESH_MS)
       }
+      // Sem Bluetooth: tela de "sem conexão" já (volta sozinha quando reconectar).
+      if (!isBleConnected()) {
+        this.showError(ERR.NO_BLE)
+        done()
+        return
+      }
       this.request({ method: 'GET_BUSES', params })
         .then(
           guard('tela do ponto dados', (data) => {
             const { result, error } = data || {}
+            // Relógio ainda sem o manifesto do mapa: veio junto (mapa sob demanda).
+            const tiles = result && result.tiles
+            if (tiles && tiles.manifest && saveManifest(tiles.manifest)) this.loadTiles()
             this.show(result, error)
           })
         )
-        .catch(() => this.show(null, 'offline'))
+        .catch(guard('tela do ponto sem conexão', () => this.showError(requestFailureCode())))
         .then(done, done)
     },
 
     // Mostra mapa e coluna da esquerda (dados) e esconde o estado.
     showDataFrame(map) {
       const w = this.state.w
+      this.hideError()
       this.stopDots()
       this.state.hasData = true
       this.state.map = map
@@ -761,13 +884,15 @@ Page(
       if (this.state.destroyed) return
       const w = this.state.w
       const { buses, map } = parseBusesResult(result)
-      if (error === 'offline') {
-        this.showStatus('Sem conexão', 'Abra o app Zepp no celular e deixe o Bluetooth ligado.', 'error')
-        this.setFooter('Nova tentativa em 30 s')
+      const err = parseErrorField(error)
+      if (err && errorScreen(err.code)) {
+        // Celular sem internet / BHTrans fora do ar: tela própria (a próxima consulta,
+        // em 30 s, tenta de novo).
+        this.showError(err.code)
         return
       }
-      if (error) {
-        this.showStatus('Erro', error, 'error')
+      if (err) {
+        this.showStatus('Erro', err.message || 'Algo deu errado', 'error')
         this.setFooter('Nova tentativa em 30 s')
         return
       }
@@ -899,6 +1024,9 @@ Page(
       this.stopDots()
       this.stopAnim()
       this.stopPassed()
+      this.stopTilePoll()
+      stopRetry(s.retry)
+      s.retry = null
       offDigitalCrown()
       try {
         if (s.vibrator) s.vibrator.stop()

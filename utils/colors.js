@@ -30,16 +30,20 @@ export const THEMES = Object.freeze({
     title: 0xf3e3c3, // mesmo do texto: 13.8:1
     eta: 0x4fa39c, // cor padrão do número (longe): 5.9:1
     text: 0xf3e3c3, // areia clara: 13.8:1
-    muted: 0x9aa5a8, // 6.9:1
+    // Tema escuro com mais contraste: elementos gráficos ≥ 3:1 e textos ≥ 4,5:1
+    // contra o fundo onde ficam (test/colors.test.mjs).
+    muted: 0xb4bec2, // 9.2:1 (texto secundário, pontos e bolinhas do mapa)
     button: 0x2e7d78, // verde-azulado
     buttonPressed: 0x24645f,
     buttonText: 0xffffff, // 4.9:1 sobre o botão
-    divider: 0x2a3540, // filetes (decorativo)
-    route: 0x56636c, // trajeto no mini mapa (decorativo)
+    divider: 0x46525e, // filetes (decorativo)
+    route: 0x8593a0, // trajeto no mini mapa: 5.6:1
     error: 0xf07a60, // coral: 6.4:1
-    card: 0x1d252d, // cartões da tela inicial
-    cardEdge: 0x2a343e, // borda sutil dos cartões
-    cardPressed: 0x26313b
+    card: 0x232d37, // cartões da tela inicial
+    cardEdge: 0x707e8c, // borda dos cartões: 3.4:1 sobre o cartão
+    cardPressed: 0x2e3a46,
+    ring: 0xb4bec2, // anel do mini mapa: 9.2:1
+    control: 0x5c6a78 // fundo dos botões +/− do mapa: 3.2:1
   }),
   light: Object.freeze({
     name: 'light',
@@ -57,7 +61,9 @@ export const THEMES = Object.freeze({
     error: 0xb5383a, // 5.2:1
     card: 0xffffff,
     cardEdge: 0xe3e7ea,
-    cardPressed: 0xeef6f4
+    cardPressed: 0xeef6f4,
+    ring: 0xe3d9c6, // anel do mini mapa
+    control: 0xe3d9c6 // fundo dos botões +/− do mapa
   })
 })
 
@@ -159,6 +165,8 @@ export const CSS_THEMES = Object.freeze({
     card: '#FFFFFF', // cartões
     cardSoft: '#FFFBF3', // linhas dentro de cartão (sugestões, trilho)
     border: '#E3D9C6', // borda sutil
+    fieldBg: '#FFFFFF', // campos de texto
+    fieldBorder: '#E3D9C6',
     title: '#2B3440',
     text: '#2B3440',
     muted: '#646E78',
@@ -188,21 +196,24 @@ export const CSS_THEMES = Object.freeze({
   dark: Object.freeze({
     name: 'dark',
     bg: '#141A21', // azul-noite
-    card: '#1D252D',
-    cardSoft: '#222B34',
-    border: '#2A3540',
+    // Mais contraste: bordas/divisórias ≥ 3:1, textos ≥ 4,5:1 (test/colors.test.mjs).
+    card: '#232D37',
+    cardSoft: '#2A3541',
+    border: '#7A8896', // 3.9:1 sobre o cartão
+    fieldBg: '#1B232B', // campos de texto
+    fieldBorder: '#7A8896', // 4.4:1 sobre o campo
     title: '#F3E3C3',
     text: '#F3E3C3',
-    muted: '#9AA5A8',
+    muted: '#B4BEC2', // também o placeholder: 8.4:1 sobre o campo
     primary: '#2E7D78',
     primaryText: '#FFFFFF',
-    accentText: '#3E9C95',
+    accentText: '#4AAAA2',
     chip: '#2E7D78',
     chipText: '#FFFFFF',
     chipSoft: '#24333A',
     chosenBg: '#1C3533',
     chosenText: '#9FD8D1',
-    railLine: '#2E4A48',
+    railLine: '#5A9A94', // trilho da lista de pontos: 4.3:1
     remove: '#E0928A',
     snackBg: '#F3E3C3',
     snackText: '#141A21',
