@@ -13,6 +13,7 @@
 // faz continuar de onde parou. settingsStorage:
 // https://docs.zepp.com/docs/reference/side-service-api/settings-storage/
 import { settingsLib } from '@zeppos/zml/base-side'
+import { outboxOf, readyStateOf as stateOf } from '../shared/transfer'
 import { withTimeout } from '../shared/bhtrans'
 import { MAP_MANIFEST_URL, MAP_THEMES, parseManifest, compactManifest, tileList, prioritizeTiles, normalizeBits, mergeBits, countBits } from '../shared/map-tiles'
 import { readFavorites } from '../utils/favorites'
@@ -230,7 +231,7 @@ export const mapSync = {
     })
     if (job.stop) return
     if (result.status === 'failed') {
-      this.mapSet(theme, { status: STATUS.PAUSED, error: 'Relógio longe, app fechado ou sem internet. Continua depois.', byUser: false })
+      this.mapSet(theme, { status: STATUS.PAUSED, error: `Parou: ${String(result.error || 'erro desconhecido').slice(0, 70)}. Continua quando abrir o app no relógio.`, byUser: false })
       return
     }
     const s = this.mapStates()[theme]
@@ -315,7 +316,9 @@ export const mapSync = {
         end(reject, new Error('Relógio não respondeu'))
       }, TRANSFER_TIMEOUT_MS)
       try {
-        file = this.sendFile(path, params)
+        // Jeito da doc (transferFile.getOutbox()), com o da zml (this.sendFile) de reserva.
+        const ob = typeof transferFile !== 'undefined' ? outboxOf(transferFile) : null // eslint-disable-line no-undef
+        file = ob && typeof ob.enqueueFile === 'function' ? ob.enqueueFile(path, params) : this.sendFile(path, params)
       } catch (e) {
         end(reject, e)
         return
@@ -325,7 +328,7 @@ export const mapSync = {
         return
       }
       file.on('change', (ev) => {
-        const st = readyStateOf(ev)
+        const st = stateOf(ev)
         if (st === 'transferred') end(resolve, true)
         else if (st === 'error' || st === 'canceled') end(reject, new Error(`Envio: ${st}`))
       })

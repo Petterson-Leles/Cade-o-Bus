@@ -1,12 +1,7 @@
 import { BaseApp } from '@zeppos/zml/base-app'
+import TransferFile from '@zos/ble/TransferFile'
 import { createMapStorage, storeReceivedTile } from './utils/map-store'
-
-// Estado do arquivo no evento 'change' (a doc chama o campo de `date`; os exemplos, de `data`).
-// https://docs.zepp.com/docs/reference/device-app-api/newAPI/transfer-file/TransferFile/
-const readyStateOf = (ev) => {
-  const d = ev && (ev.data || ev.date)
-  return d && d.readyState
-}
+import { inboxOf, onNewFile, readyStateOf as stateOf } from './shared/transfer'
 
 App(
   BaseApp({
@@ -14,7 +9,8 @@ App(
       // Uma instância só de LocalStorage para o app todo (utils/map-store.js).
       mapStorage: null,
       // param do alarme do sistema (utils/alarms.js), lido pela tela inicial.
-      launchParam: null
+      launchParam: null,
+      transfer: null
     },
     onCreate(param) {
       console.log('Cadê o Busão: app criado')
@@ -23,6 +19,14 @@ App(
         this.globalData.mapStorage = createMapStorage()
       } catch (e) {
         console.log('Cadê o Busão: LocalStorage indisponível', e && e.message ? e.message : e)
+      }
+      // Recebe os blocos do mapa pela inbox (jeito da doc, com o da zml de reserva).
+      try {
+        this.globalData.transfer = new TransferFile()
+        const ok = onNewFile(inboxOf(this.globalData.transfer), (file) => this.receiveTile(file))
+        if (!ok) console.log('Mapa: inbox indisponível')
+      } catch (e) {
+        console.log('Mapa: TransferFile indisponível', e && e.message ? e.message : e)
       }
     },
 
@@ -35,12 +39,12 @@ App(
     // arquivo: quem receber guarda. storeReceivedTile é idempotente (não apaga um
     // bloco já guardado se o original sumiu) e cada um anota no seu registro (o app no
     // LocalStorage, o service no JSON dele); a contagem é a união dos dois.
-    onReceivedFile(file) {
+    receiveTile(file) {
       try {
         if (!file || typeof file.on !== 'function') return
         file.on('change', (ev) => {
           try {
-            if (readyStateOf(ev) !== 'transferred') return
+            if (stateOf(ev) !== 'transferred') return
             if (!storeReceivedTile(file)) console.log('Mapa: arquivo ignorado', file.fileName)
           } catch (e) {
             console.log('Mapa: erro ao guardar bloco', e && e.message ? e.message : e)

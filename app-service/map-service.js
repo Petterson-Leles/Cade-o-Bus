@@ -16,6 +16,7 @@
 // (LocalStorage não está na lista de APIs do service): guarda o que recebeu num
 // registro próprio (utils/map-files.js), que o app soma ao dele.
 import TransferFile from '@zos/ble/TransferFile'
+import { inboxOf, onNewFile, outboxOf } from '../shared/transfer'
 import { Time } from '@zos/sensor'
 import { exit } from '@zos/app-service'
 import { MAP_THEMES } from '../shared/map-tiles'
@@ -126,7 +127,7 @@ function ping() {
     return
   }
   try {
-    const f = transfer.getOutbox().enqueueFile(PING_FILE, syncFileParams(have()))
+    const f = outboxOf(transfer).enqueueFile(PING_FILE, syncFileParams(have()))
     if (f && typeof f.on === 'function') {
       f.on(
         'change',
@@ -191,15 +192,7 @@ AppService({
     log('iniciado', st.theme, `${themeDone(current())}/${st.total}`)
     try {
       transfer = new TransferFile()
-      const inbox = transfer.getInbox()
-      // 'newfile' em minúsculas, como a zml usa no app (funciona no relógio real; a
-      // tabela da doc escreve NEWFILE).
-      inbox.on(
-        'newfile',
-        safe('inbox', () => {
-          onFile(inbox.getNextFile())
-        })
-      )
+      if (!onNewFile(inboxOf(transfer), safe('inbox', (file) => onFile(file)))) log('inbox indisponível no service')
     } catch (e) {
       log('TransferFile indisponível no service:', errText(e))
     }

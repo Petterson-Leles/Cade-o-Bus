@@ -1,6 +1,7 @@
 // Side service: roda no app Zepp do celular, que é quem tem internet.
 // O relógio pede os dados por mensagem e recebe só o resultado já filtrado.
 import { BaseSideService, settingsLib } from '@zeppos/zml/base-side'
+import { inboxOf, onNewFile } from '../shared/transfer'
 import {
   BHTRANS_REALTIME_URL,
   parseCsv,
@@ -113,6 +114,12 @@ AppSideService(
         if (!this.mapReady) this.mapInit()
       } catch (e) {
         console.log('Mapa: erro ao iniciar', e && e.message ? e.message : e)
+      }
+      // Arquivos do relógio também pelo jeito da doc (getInbox + NEWFILE), além da zml.
+      try {
+        if (typeof transferFile !== 'undefined') onNewFile(inboxOf(transferFile), (file) => this.onReceivedFile(file)) // eslint-disable-line no-undef
+      } catch (e) {
+        console.log('Mapa: inbox do celular', e && e.message ? e.message : e)
       }
     },
 
