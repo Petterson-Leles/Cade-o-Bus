@@ -156,3 +156,27 @@ test('shouldPrompt: aviso no relógio só sem mapa e sem insistir', () => {
   assert.equal(shouldPrompt({ ready: false, prompt: { choice: 'yes', at: now - 1000 }, phoneStatus: STATUS.NONE, now }), false)
   assert.equal(shouldPrompt({ ready: false, prompt: { choice: 'yes', at: 0 }, phoneStatus: STATUS.ERROR, now }), false)
 })
+
+import { applyCommandLocally, isStale, stoppedByUser, statusText as statusText2, STALE_MS } from '../shared/map-download.js'
+
+test('botões da tela de configurações mudam o estado na hora', () => {
+  const st = { dark: { status: 'downloading', total: 4, have: '3' }, light: { status: 'none' } }
+  const p = applyCommandLocally(st, 'pause', 'dark', 1000)
+  assert.equal(p.dark.status, 'paused')
+  assert.equal(p.dark.byUser, true)
+  assert.equal(stoppedByUser(p.dark), true)
+  const d = applyCommandLocally(st, 'delete', 'all', 1000)
+  assert.equal(d.dark.status, 'deleting')
+  assert.equal(d.light.status, 'none') // nada para apagar
+  const b = applyCommandLocally({ dark: { status: 'none' } }, 'download', 'dark', 1000)
+  assert.equal(b.dark.status, 'downloading')
+  assert.equal(stoppedByUser(b.dark), false)
+})
+
+test('download sem notícia há mais de 1 min aparece como parado', () => {
+  const s = { status: 'downloading', total: 4, have: '1', updatedAt: 1000, stepAt: 1000, step: 'bloco 2: enviando ao relógio' }
+  assert.equal(isStale(s, 1000 + STALE_MS - 1), false)
+  assert.match(statusText2(s, 2000), /enviando ao relógio/)
+  assert.equal(isStale(s, 1000 + STALE_MS + 1), true)
+  assert.match(statusText2(s, 1000 + STALE_MS + 1), /abra o Cadê o Busão no relógio/)
+})

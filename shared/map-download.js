@@ -26,7 +26,8 @@ const isTheme = (t) => MAP_THEMES.indexOf(t) >= 0
 
 export function emptyThemeState() {
   // byUser: pausado pela pessoa (não volta sozinho quando o relógio aparece).
-  return { status: STATUS.NONE, done: 0, total: 0, have: '', error: '', updatedAt: 0, stored: 0, byUser: false }
+  // step/stepAt: etapa do bloco atual (diagnóstico na tela de configurações).
+  return { status: STATUS.NONE, done: 0, total: 0, have: '', error: '', updatedAt: 0, stored: 0, byUser: false, step: '', stepAt: 0 }
 }
 
 // Estado de um tema (sempre um objeto completo e coerente).
@@ -41,6 +42,8 @@ export function cleanThemeState(raw) {
   s.updatedAt = Number(raw.updatedAt) > 0 ? Number(raw.updatedAt) : 0
   s.stored = Number(raw.stored) > 0 ? Math.round(Number(raw.stored)) : 0
   s.byUser = raw.byUser === true && s.status === STATUS.PAUSED
+  s.step = typeof raw.step === 'string' ? raw.step.slice(0, 60) : ''
+  s.stepAt = Number(raw.stepAt) > 0 ? Number(raw.stepAt) : 0
   if (s.status === STATUS.READY && (s.total === 0 || s.done < s.total)) s.status = s.done > 0 ? STATUS.PAUSED : STATUS.NONE
   return s
 }
@@ -96,11 +99,24 @@ export function missingTiles(list, have) {
 }
 
 // Texto do estado para a tela de configurações.
-export function statusText(state) {
+// Sem notícia do celular há mais que isso durante o download = parado (o serviço
+// do celular só roda com o app aberto no relógio).
+export const STALE_MS = 60 * 1000
+
+export function isStale(state, now = Date.now()) {
+  const s = cleanThemeState(state)
+  const last = Math.max(s.updatedAt, s.stepAt)
+  return s.status === STATUS.DOWNLOADING && last > 0 && now - last > STALE_MS
+}
+
+export function statusText(state, now = Date.now()) {
   const s = cleanThemeState(state)
   switch (s.status) {
-    case STATUS.DOWNLOADING:
-      return s.total > 0 ? `Baixando ${s.done} de ${s.total}` : 'Baixando…'
+    case STATUS.DOWNLOADING: {
+      const base = s.total > 0 ? `Baixando ${s.done} de ${s.total}` : 'Baixando…'
+      if (isStale(s, now)) return `${base} · parado: abra o Cadê o Busão no relógio para continuar`
+      return s.step ? `${base} · ${s.step}` : base
+    }
     case STATUS.PAUSED:
       return `Pausado em ${s.done} de ${s.total}${s.error ? ` · ${s.error}` : ''}`
     case STATUS.READY:
@@ -112,6 +128,29 @@ export function statusText(state) {
     default:
       return 'Não baixado'
   }
+}
+
+// O que o botão da tela de configurações faz no estado na hora, sem esperar o
+// serviço do celular (ele pode estar parado se o app do relógio estiver fechado).
+export function applyCommandLocally(states, action, theme, now = Date.now()) {
+  const out = {}
+  MAP_THEMES.forEach((t) => {
+    out[t] = cleanThemeState(states && states[t])
+  })
+  const themes = theme === 'all' ? MAP_THEMES : isTheme(theme) ? [theme] : []
+  themes.forEach((t) => {
+    const s = out[t]
+    if (action === 'pause' && s.status === STATUS.DOWNLOADING) out[t] = { ...s, status: STATUS.PAUSED, byUser: true, error: '', step: '', updatedAt: now }
+    else if (action === 'delete' && (s.status !== STATUS.NONE || s.done > 0)) out[t] = { ...s, status: STATUS.DELETING, error: '', step: '', updatedAt: now }
+    else if (action === 'download' && s.status !== STATUS.READY) out[t] = { ...s, status: STATUS.DOWNLOADING, byUser: false, error: '', step: 'esperando o app abrir no relógio', stepAt: now, updatedAt: now }
+  })
+  return out
+}
+
+// A pessoa parou este tema pela tela de configurações (pausar ou apagar)?
+export function stoppedByUser(state) {
+  const s = cleanThemeState(state)
+  return (s.status === STATUS.PAUSED && s.byUser) || s.status === STATUS.DELETING || s.status === STATUS.NONE
 }
 
 // "3,7 MB"

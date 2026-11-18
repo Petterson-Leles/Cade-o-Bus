@@ -6,7 +6,7 @@
 // Tudo o que a tela guarda fica no settingsStorage (rascunho, mensagem, último
 // removido); o side service só avisa o relógio quando mudam "favorites" ou "theme".
 import { readFavorites, writeFavorites, newFavoriteId, removeFavorite, readVibrate, writeVibrate } from '../utils/favorites'
-import { readMapStates, statusText, formatBytes, makeCommand, STATUS, MAP_COMMAND_KEY, MAP_MANIFEST_KEY } from '../shared/map-download'
+import { readMapStates, writeMapStates, applyCommandLocally, statusText, formatBytes, makeCommand, STATUS, MAP_COMMAND_KEY, MAP_MANIFEST_KEY } from '../shared/map-download'
 import { parseManifest, MAP_ATTRIBUTION } from '../shared/map-tiles'
 import { CSS, readThemeName, writeThemeName } from '../utils/colors'
 import {
@@ -129,7 +129,12 @@ function mapSection(storage) {
     const b = manifest && manifest.themes[t] ? formatBytes(manifest.themes[t].bytes) : ''
     return b || '~3,5 MB'
   }
-  const send = (action, theme) => storage.setItem(MAP_COMMAND_KEY, makeCommand(action, theme))
+  // Atualiza o estado na hora (o serviço do celular pode estar parado) e deixa o
+  // comando para ele, que o executa quando estiver rodando.
+  const send = (action, theme) => {
+    writeMapStates(storage, applyCommandLocally(readMapStates(storage), action, theme))
+    storage.setItem(MAP_COMMAND_KEY, makeCommand(action, theme))
+  }
   const busy = (t) => states[t].status === STATUS.DOWNLOADING
   const has = (t) => states[t].status !== STATUS.NONE || states[t].done > 0
   const line = (t) => {
@@ -151,7 +156,7 @@ function mapSection(storage) {
   const out = [
     Text(
       { paragraph: true, style: { fontSize: '12px', color: CSS.muted, marginTop: '4px' } },
-      'Ruas e nomes no mini mapa da tela do ponto. O celular baixa uma vez só e manda ao relógio pelo Bluetooth (deixe o app aberto no relógio).'
+      'Ruas e nomes no mini mapa da tela do ponto. O celular baixa uma vez só e manda ao relógio pelo Bluetooth. Importante: o download só anda com o Cadê o Busão aberto no relógio (deixe a tela inicial aberta até terminar).'
     ),
     line(current),
     has(other) ? line(other) : null

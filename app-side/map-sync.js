@@ -25,6 +25,7 @@ import {
   markDone,
   missingTiles,
   runQueue,
+  stoppedByUser,
   parseCommand,
   tileParams
 } from '../shared/map-download'
@@ -77,7 +78,16 @@ export const mapSync = {
     const now = Date.now()
     if (!force && now - this.mapLastSave < SAVE_EVERY_MS) return
     this.mapLastSave = now
-    this.mapStatesCache = writeMapStates(settingsLib, this.mapStatesCache || this.mapStates())
+    const mine = this.mapStatesCache || this.mapStates()
+    // A tela de configurações muda o estado direto (pausar/apagar): não sobrescrever.
+    const stored = readMapStates(settingsLib)
+    MAP_THEMES.forEach((t) => {
+      if (stoppedByUser(stored[t]) && mine[t].status === STATUS.DOWNLOADING) {
+        mine[t] = { ...mine[t], status: stored[t].status, byUser: stored[t].byUser, step: '' }
+        this.mapStopTheme(t)
+      }
+    })
+    this.mapStatesCache = writeMapStates(settingsLib, mine)
   },
 
   mapSet(theme, patch, force = true) {
@@ -113,6 +123,13 @@ export const mapSync = {
       if (m) return m
       throw e
     }
+  },
+
+  // Etapa do bloco atual, para a tela de configurações mostrar onde está.
+  mapStep(theme, text) {
+    const states = this.mapStates()
+    states[theme] = { ...states[theme], step: text, stepAt: Date.now() }
+    this.mapSave(false)
   },
 
   // Põe o tema na fila (não roda dois downloads ao mesmo tempo).
@@ -168,8 +185,12 @@ export const mapSync = {
         s[theme] = markDone(s[theme], tile.i)
         this.mapSave(s[theme].status === STATUS.READY)
       },
-      onFail: (tile, err, tries) => console.log(`Mapa: bloco ${tile.name} falhou (${tries}):`, errText(err)),
-      shouldStop: () => job.stop,
+      onFail: (tile, err, tries) => {
+        console.log(`Mapa: bloco ${tile.name} falhou (${tries}):`, errText(err))
+        this.mapStep(theme, `bloco ${tile.i + 1}: falhou (tentativa ${tries}): ${errText(err).slice(0, 60)}`)
+      },
+      // Para também se a pessoa pausou/apagou na tela de configurações.
+      shouldStop: () => job.stop || stoppedByUser(readMapStates(settingsLib)[theme]),
       wait: sleep
     })
     if (job.stop) return
@@ -186,7 +207,10 @@ export const mapSync = {
   async mapProcessTile(theme, tile, total) {
     const png = `data://download/cob-${tile.name}`
     const converted = `data://download/cob-c-${tile.name}`
+    const n = tile.i + 1
+    this.mapStep(theme, `bloco ${n}: baixando da internet`)
     await this.mapDownloadFile(tile.url, png)
+    this.mapStep(theme, `bloco ${n}: convertendo`)
     const conv = await withTimeout(this.mapConvert({ filePath: png, targetFilePath: converted }), CONVERT_TIMEOUT_MS)
     const out = (conv && conv.targetFilePath) || converted
     const size = conv && conv.options && Number(conv.options.size)
@@ -194,6 +218,7 @@ export const mapSync = {
       const s = this.mapStates()
       s[theme] = { ...s[theme], stored: (s[theme].stored || 0) + size }
     }
+    this.mapStep(theme, `bloco ${n}: enviando ao relógio`)
     await this.mapSendFile(out, tileParams(theme, tile, total))
   },
 
@@ -293,6 +318,8 @@ export const mapSync = {
   mapHandleCommand(raw) {
     const cmd = parseCommand(raw)
     if (!cmd) return
+    // A tela de configurações já mudou o estado: relê do settingsStorage.
+    this.mapStatesCache = null
     const doneAt = Number(settingsLib.getItem(COMMAND_DONE_KEY)) || 0
     if (cmd.at && cmd.at <= doneAt) return
     settingsLib.setItem(COMMAND_DONE_KEY, String(cmd.at || Date.now()))

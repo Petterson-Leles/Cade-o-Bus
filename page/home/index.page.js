@@ -10,6 +10,10 @@ import { parseSettingsResult } from '../../utils/favorites'
 import { etaFromSummary } from '../../shared/summary'
 import { greeting } from '../../shared/text'
 import { guard } from '../../utils/crash'
+// Tela acesa durante o download do mapa: o serviço do celular só roda com o app aberto.
+// https://docs.zepp.com/docs/reference/device-app-api/newAPI/display/setPageBrightTime/
+// https://docs.zepp.com/docs/reference/device-app-api/newAPI/display/pauseDropWristScreenOff/
+import { setPageBrightTime, resetPageBrightTime, pauseDropWristScreenOff, resetDropWristScreenOff } from '@zos/display'
 import { shouldPrompt, formatBytes, STATUS } from '../../shared/map-download'
 import { saveManifest, haveBits, tileInfo, deleteTheme, readPrompt, savePrompt, canReceiveFiles, themeProgress } from '../../utils/map-store'
 
@@ -140,10 +144,32 @@ Page(
         const p = themeProgress(s.theme)
         note = p.total > 0 ? `Mapa: chegou ${p.done} de ${p.total}` : 'Baixando o mapa pelo celular…'
       }
+      this.keepAwake(!!note)
+      // Enquanto baixa, pergunta o progresso de tempos em tempos.
+      if (s.mapPollTimer) clearTimeout(s.mapPollTimer)
+      s.mapPollTimer = note ? setTimeout(() => this.syncMap(), 5000) : null
       if (show === s.mapPrompt && note === s.mapNote) return
       s.mapPrompt = show
       s.mapNote = note
       this.draw()
+    },
+
+    // Mantém a tela acesa (e o app aberto) enquanto o mapa chega.
+    keepAwake(on) {
+      const s = this.state
+      if (!!s.awake === on) return
+      s.awake = on
+      try {
+        if (on) {
+          setPageBrightTime({ brightTime: 10 * 60 * 1000 })
+          pauseDropWristScreenOff({ duration: 0 })
+        } else {
+          resetPageBrightTime()
+          resetDropWristScreenOff()
+        }
+      } catch (e) {
+        console.log('Tela acesa indisponível', e && e.message ? e.message : e)
+      }
     },
 
     mapSizeText() {
@@ -171,6 +197,7 @@ Page(
               s.mapThemes = result.themes || s.mapThemes
             }
             this.draw()
+            this.decideMapPrompt()
           })
         )
         .catch(() => {
@@ -458,6 +485,8 @@ Page(
     },
 
     onDestroy() {
+      if (this.state.mapPollTimer) clearTimeout(this.state.mapPollTimer)
+      this.keepAwake(false)
       this.state.destroyed = true
       if (this.state.timer) clearTimeout(this.state.timer)
       this.state.timer = null
