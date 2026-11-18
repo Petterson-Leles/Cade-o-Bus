@@ -341,8 +341,17 @@ export const mapSync = {
     const stage = (name) => (e) => {
       throw new Error(`${name}: ${errText(e)}`)
     }
-    await this.mapDownloadFile(tile.url, png).catch(stage('download'))
-    const conv = await withTimeout(this.mapConvert({ filePath: png, targetFilePath: converted }), CONVERT_TIMEOUT_MS).catch(stage('convert'))
+    // Usa o caminho que o download devolve (o Zepp pode gravar em outro lugar que não
+    // o pedido). Se o arquivo não estiver lá, baixa de novo no caminho padrão do Zepp.
+    let src = await this.mapDownloadFile(tile.url, png).catch(stage('download'))
+    let conv
+    try {
+      conv = await withTimeout(this.mapConvert({ filePath: src, targetFilePath: converted }), CONVERT_TIMEOUT_MS)
+    } catch (e) {
+      if (!/not found|no such|não encontr/i.test(errText(e))) stage('convert')(e)
+      src = await this.mapDownloadFile(tile.url, null).catch(stage('download2'))
+      conv = await withTimeout(this.mapConvert({ filePath: src }), CONVERT_TIMEOUT_MS).catch(stage(`convert(${String(src).slice(-28)})`))
+    }
     const out = (conv && conv.targetFilePath) || converted
     if (out === converted) this.mapCacheMark(theme, tile.i, true)
     return out
@@ -403,7 +412,7 @@ export const mapSync = {
         end(reject, new Error('Download demorou demais'))
       }, DOWNLOAD_TIMEOUT_MS + 5000)
       try {
-        const opts = { timeout: DOWNLOAD_TIMEOUT_MS, filePath }
+        const opts = filePath ? { timeout: DOWNLOAD_TIMEOUT_MS, filePath } : { timeout: DOWNLOAD_TIMEOUT_MS }
         task = typeof this.download === 'function' ? this.download(url, opts) : network.downloader.downloadFile({ url, ...opts }) // eslint-disable-line no-undef
       } catch (e) {
         end(reject, e)
@@ -412,7 +421,11 @@ export const mapSync = {
       task.onSuccess = (ev) => {
         const code = Number(ev && ev.statusCode)
         if (code && (code < 200 || code >= 300)) end(reject, new Error(`HTTP ${code}`))
-        else end(resolve, (ev && (ev.filePath || ev.tempFilePath)) || filePath)
+        else {
+          const got = (ev && (ev.filePath || ev.tempFilePath)) || filePath
+          if (!got) end(reject, new Error('Download sem caminho do arquivo'))
+          else end(resolve, got)
+        }
       }
       task.onFail = (ev) => end(reject, new Error(`Download falhou${ev && ev.code !== undefined ? ` (${ev.code})` : ''}`))
     })
