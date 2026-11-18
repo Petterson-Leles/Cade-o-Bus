@@ -9,10 +9,9 @@
 // - arquivos recebidos do celular (TransferFile, inbox), API 3.0+:
 //   https://docs.zepp.com/docs/reference/device-app-api/newAPI/transfer-file/TransferFile/
 import { LocalStorage } from '@zos/storage'
-import { mkdirSync, renameSync, statSync, rmSync, readFileSync, writeFileSync } from '@zos/fs'
+import { rmSync } from '@zos/fs'
 import {
   MAP_THEMES,
-  WATCH_MAP_DIR,
   parseCompactManifest,
   compactTotal,
   watchTilePath,
@@ -22,7 +21,8 @@ import {
   countBits,
   designLevels
 } from '../shared/map-tiles'
-import { parseTileParams } from '../shared/map-download'
+import { unionTheme } from '../shared/map-service'
+import { moveReceivedTile, readServiceRegistry, writeServiceRegistry, removeServiceRegistry } from './map-files'
 
 const KEY_MANIFEST = 'map.manifest'
 const KEY_PROMPT = 'map.prompt'
@@ -88,11 +88,18 @@ export function saveManifest(compact) {
   return m
 }
 
-// { have, total } de um tema.
-function readTheme(theme) {
+// { have, total } de um tema só no LocalStorage do app.
+function readMainTheme(theme) {
   const r = obj(get(themeKey(theme), null)) || {}
   const total = Number.isInteger(r.total) ? r.total : 0
   return { have: normalizeBits(r.have, total), total }
+}
+
+// { have, total } de um tema: o do app somado ao que o App Service guardou
+// (registro próprio dele, utils/map-files.js). Os dois só somam bits: o mesmo bloco
+// guardado pelos dois não conta duas vezes.
+function readTheme(theme) {
+  return unionTheme(readMainTheme(theme), readServiceRegistry().themes[theme])
 }
 
 function writeTheme(theme, rec) {
@@ -129,66 +136,31 @@ export function themeProgress(theme) {
   return { done: countBits(rec.have, total || rec.total), total: total || rec.total }
 }
 
-function ensureDir() {
-  try {
-    if (!statSync({ path: `data://${WATCH_MAP_DIR}` })) mkdirSync({ path: `data://${WATCH_MAP_DIR}` })
-  } catch (e) {
-    try {
-      mkdirSync({ path: `data://${WATCH_MAP_DIR}` })
-    } catch (e2) {
-      // já existe ou não deu: o rename abaixo diz
-    }
-  }
-}
-
-const exists = (path) => {
-  try {
-    const st = statSync({ path })
-    return !!st && st.size > 0
-  } catch (e) {
-    return false
-  }
-}
-
 // Arquivo recebido (FileObject do inbox, readyState 'transferred'): move para
 // data://map/<tema>-<k>-<x>_<y>.png e marca o bloco. Devolve true se guardou.
+// Idempotente (o App Service pode receber o mesmo bloco): ver moveReceivedTile.
 export function storeReceivedTile(file) {
-  let params = file && file.params
-  if (typeof params === 'string') params = obj(params)
-  const p = parseTileParams(params)
-  if (!p) return false
-  const src = file.filePath
-  const target = watchTilePath(p.theme, p.k, p.x, p.y)
-  ensureDir()
-  if (src && src !== target) {
-    try {
-      if (exists(target)) rmSync({ path: target })
-    } catch (e) {
-      // nada
-    }
-    let ok = false
-    try {
-      ok = renameSync({ oldPath: src, newPath: target }) === 0
-    } catch (e) {
-      ok = false
-    }
-    if (!ok) {
-      // Sem rename (outra pasta/partição): copia e apaga o original.
-      try {
-        const buf = readFileSync({ path: src })
-        if (buf) writeFileSync({ path: target, data: buf })
-        rmSync({ path: src })
-      } catch (e) {
-        console.log('Mapa: não deu para guardar', src, e && e.message ? e.message : e)
-      }
-    }
-  }
-  if (!exists(target)) return false
-  const rec = readTheme(p.theme)
+  const { tile: p, ok } = moveReceivedTile(file)
+  if (!p || !ok) return false
+  const rec = readMainTheme(p.theme)
   const total = p.total
   const have = setBit(normalizeBits(rec.total === total ? rec.have : '', total), p.i)
   writeTheme(p.theme, { have, total })
   return true
+}
+
+// O que o App Service guardou vira registro do app. Com o service parado, apaga o
+// registro dele (com ele rodando, só copia: ele continua gravando no arquivo dele).
+export function absorbServiceTiles(serviceRunning) {
+  const reg = readServiceRegistry()
+  MAP_THEMES.forEach((t) => {
+    const extra = reg.themes[t]
+    if (!extra) return
+    const main = readMainTheme(t)
+    const u = unionTheme(main, extra)
+    if (u.total !== main.total || u.have !== main.have) writeTheme(t, u)
+  })
+  if (!serviceRunning) removeServiceRegistry()
 }
 
 // Apaga os blocos de um tema (o celular pediu "Apagar mapa").
@@ -212,6 +184,12 @@ export function deleteTheme(theme) {
     })
   }
   writeTheme(theme, { have: '', total: 0 })
+  // Também o que o App Service guardou deste tema.
+  const reg = readServiceRegistry()
+  if (reg.themes[theme]) {
+    delete reg.themes[theme]
+    writeServiceRegistry(reg)
+  }
 }
 
 // Escolha do aviso "Baixar o mapa de BH?": { choice: 'yes' | 'later', at }.

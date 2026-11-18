@@ -1,7 +1,7 @@
 // Download do mapa de BH (celular -> relógio): estado guardado no settingsStorage,
 // fila sequencial e retomável, comandos da tela de configurações e o aviso do relógio.
 // Lógica pura (sem APIs do Zepp OS), testada em test/map-download.test.mjs.
-import { MAP_THEMES, normalizeBits, countBits, hasBit, setBit } from './map-tiles.js'
+import { MAP_THEMES, normalizeBits, countBits, hasBit, setBit, mergeBits } from './map-tiles.js'
 
 // settingsStorage (celular): estado por tema, manifesto em cache e o último comando.
 export const MAP_STATE_KEY = 'mapDownload'
@@ -82,6 +82,20 @@ export function applyWatchBits(state, watchHex, total) {
   if (s.status === STATUS.DELETING) return next
   if (n > 0 && done >= n) return { ...next, status: STATUS.READY, error: '' }
   if (s.status === STATUS.READY) return { ...next, status: done > 0 ? STATUS.PAUSED : STATUS.NONE }
+  return next
+}
+
+// Só soma o que o relógio diz ter (nunca tira): usado com o "MAP_SYNC" do App
+// Service do relógio (shared/map-service.js), que pode não enxergar tudo o que o app
+// guardou. Completa -> pronto.
+export function mergeWatchBits(state, watchHex, total) {
+  const s = cleanThemeState(state)
+  const n = Number.isInteger(total) && total > 0 ? total : s.total
+  if (!(n > 0)) return s
+  const have = mergeBits(s.total === n ? s.have : '', watchHex, n)
+  const done = countBits(have, n)
+  const next = { ...s, total: n, have, done }
+  if (s.status !== STATUS.DELETING && done >= n) return { ...next, status: STATUS.READY, error: '' }
   return next
 }
 

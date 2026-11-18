@@ -23,6 +23,7 @@ import {
   readMapStates,
   writeMapStates,
   applyWatchBits,
+  mergeWatchBits,
   markDone,
   missingTiles,
   runQueue,
@@ -52,7 +53,9 @@ const readyStateOf = (ev) => {
 
 export const mapSync = {
   // Chamado no onInit do side service.
+  // Pode vir antes do onInit (arquivo do relógio que acordou o side service).
   mapInit() {
+    this.mapReady = true
     this.mapJob = null // { theme, stop } do tema baixando agora
     this.mapWaiting = [] // temas na fila
     this.mapStatesCache = null
@@ -375,7 +378,10 @@ export const mapSync = {
 
   // MAP_SYNC do relógio: params.have = { dark: hex, light: hex } do que ele tem.
   // Devolve o manifesto curto, o estado de cada tema e o que apagar.
+  // params.merge: veio do App Service do relógio (que pode não enxergar tudo o que o
+  // app guardou): só soma bits, não tira nem apaga.
   async mapOnSync(params) {
+    const merge = !!(params && params.merge)
     let manifest = null
     try {
       manifest = await this.mapManifest(false)
@@ -390,7 +396,11 @@ export const mapSync = {
       const total = manifest ? tileList(manifest, t).length : states[t].total
       const running = !!this.mapJob && this.mapJob.theme === t && !this.mapJob.stop
       const watchHex = normalizeBits(have[t], total)
-      if (states[t].status === STATUS.DELETING) {
+      if (merge && states[t].status !== STATUS.DELETING) {
+        states[t] = mergeWatchBits(states[t], watchHex, total)
+      } else if (merge) {
+        // apagando: espera o app do relógio abrir
+      } else if (states[t].status === STATUS.DELETING) {
         if (countBits(watchHex, total) > 0) del.push(t)
         else states[t] = { ...states[t], status: STATUS.NONE, have: '', done: 0, stored: 0, error: '' }
       } else if (running) {

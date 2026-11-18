@@ -19,7 +19,8 @@ import { trackPassing, latestPassed } from '../shared/passing'
 import { summarizeEtas, withStreets, createFeedCache } from '../shared/summary'
 import { mapSync } from './map-sync'
 import { MAP_COMMAND_KEY } from '../shared/map-download'
-import { VIBRATE_KEY } from '../utils/favorites'
+import { VIBRATE_KEY, MAP_BACKGROUND_KEY } from '../utils/favorites'
+import { parseSyncFileParams } from '../shared/map-service'
 // Pacote gerado por scripts/build-gtfs.mjs (GTFS oficial de BH, SUMOB/PBH).
 import GTFS_INDEX from '../data/gtfs-index'
 import GTFS_SHAPES from '../data/gtfs-shapes'
@@ -109,7 +110,7 @@ AppSideService(
     onInit() {
       this.feed = createFeedCache(() => this.downloadFeed(), FEED_TTL_MS)
       try {
-        this.mapInit()
+        if (!this.mapReady) this.mapInit()
       } catch (e) {
         console.log('Mapa: erro ao iniciar', e && e.message ? e.message : e)
       }
@@ -251,8 +252,24 @@ AppSideService(
         this.mapHandleCommand(change.newValue)
         return
       }
-      if (change.key !== FAVORITES_KEY && change.key !== THEME_KEY && change.key !== VIBRATE_KEY) return
+      if (change.key !== FAVORITES_KEY && change.key !== THEME_KEY && change.key !== VIBRATE_KEY && change.key !== MAP_BACKGROUND_KEY) return
       this.call({ method: 'SETTINGS_CHANGED', result: this.settingsForWatch() })
+    },
+
+    // Arquivo vindo do relógio (outbox do TransferFile). A zml liga isto ao evento
+    // 'file' do inbox e, se o celular abriu o side service por causa do arquivo
+    // (sideService.launchReasons.fileTransfer), chama já no início, antes do onInit.
+    // O App Service do relógio (app-service/map-service.js) manda assim o seu
+    // "MAP_SYNC" (ele não tem a mensageria da zml): só soma bits e retoma a fila.
+    onReceivedFile(file) {
+      try {
+        const p = parseSyncFileParams(file && file.params)
+        if (!p) return
+        if (!this.mapReady) this.mapInit()
+        this.mapOnSync({ have: p.have, merge: true }).catch((e) => console.log('Mapa: sync do service', e && e.message ? e.message : e))
+      } catch (e) {
+        console.log('Mapa: arquivo do relógio', e && e.message ? e.message : e)
+      }
     },
 
     onRun() {},

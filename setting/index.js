@@ -15,8 +15,8 @@
 //
 // Tudo o que a tela guarda fica no settingsStorage (rascunho, mensagem, último
 // removido, ponto em edição); o side service só avisa o relógio quando mudam
-// "favorites", "theme" ou "vibrate".
-import { readFavorites, writeFavorites, newFavoriteId, removeFavorite, updateFavorite, readVibrate, writeVibrate, MAX_TEXT_LEN } from '../utils/favorites'
+// "favorites", "theme", "vibrate" ou "mapBackground".
+import { readFavorites, writeFavorites, newFavoriteId, removeFavorite, updateFavorite, readVibrate, writeVibrate, readMapBackground, writeMapBackground, MAX_TEXT_LEN } from '../utils/favorites'
 import { readMapStates, writeMapStates, applyCommandLocally, statusText, formatBytes, makeCommand, STATUS, MAP_COMMAND_KEY, MAP_MANIFEST_KEY } from '../shared/map-download'
 import { parseManifest, MAP_ATTRIBUTION } from '../shared/map-tiles'
 import { cssTheme, readThemeName, writeThemeName } from '../utils/colors'
@@ -293,12 +293,22 @@ AppSettingsPage({
       if (busy(current) || busy(other)) links.push(link('Pausar', () => send('pause', busy(current) ? current : other)))
       if (states[other].status !== STATUS.READY && !busy(other)) links.push(link(`Baixar também o tema ${THEME_LABEL[other]} (${size(other)})`, () => send('download', other)))
       if (has(current) || has(other)) links.push(link('Apagar do relógio', () => send('delete', 'all'), C.remove))
+      const bgOn = readMapBackground(storage)
       return card([
-        small('Ruas e nomes no mini mapa da tela do ponto. O celular baixa uma vez só e manda ao relógio pelo Bluetooth; o download só anda com o Cadê o Busão aberto no relógio.'),
+        small(
+          bgOn
+            ? 'Ruas e nomes no mini mapa da tela do ponto. O celular baixa uma vez só e manda ao relógio pelo Bluetooth.'
+            : 'Ruas e nomes no mini mapa da tela do ponto. O celular baixa uma vez só e manda ao relógio pelo Bluetooth; o download só anda com o Cadê o Busão aberto no relógio.'
+        ),
         line(current),
         has(other) ? line(other) : null,
         ...actions,
         links.length > 0 ? View({ style: { display: 'flex', flexDirection: 'row', flexWrap: 'wrap', marginTop: '8px', columnGap: '14px' } }, links) : null,
+        View({ style: { height: '1px', background: C.border, margin: '14px 0 4px' } }, []),
+        Toggle({ label: 'Baixar com a tela desligada (experimental)', value: bgOn, onChange: (val) => { clearSnack(); writeMapBackground(storage, !!val) } }),
+        small(
+          'O relógio continua recebendo o mapa com a tela apagada ou o app fechado (serviço em segundo plano; para sozinho ao terminar, em 30 min ou sem progresso por 5 min). Gasta mais bateria do relógio e do celular. Na primeira vez o relógio pede permissão; se você negar, ele mantém a tela acesa como antes. O app Zepp precisa ficar aberto ou em segundo plano no celular.'
+        ),
         small(`${MAP_ATTRIBUTION} (ODbL).`, { fontSize: '11px', marginTop: '10px' })
       ])
     }

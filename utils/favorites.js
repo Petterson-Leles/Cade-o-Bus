@@ -9,6 +9,9 @@ import { normalizeAlert } from '../shared/schedule.js'
 export const FAVORITES_KEY = 'favorites'
 // Interruptor "Vibrar no relógio" (settingsStorage: '0' desliga; padrão ligado).
 export const VIBRATE_KEY = 'vibrate'
+// Interruptor "Baixar com a tela desligada (experimental)" (settingsStorage: '1' liga;
+// padrão desligado). Vai ao relógio como bgMap.
+export const MAP_BACKGROUND_KEY = 'mapBackground'
 export const MAX_TEXT_LEN = 30
 export const MAX_STREET_LEN = 48
 
@@ -112,26 +115,41 @@ export function writeVibrate(storage, on) {
   storage.setItem(VIBRATE_KEY, on ? '1' : '0')
 }
 
+export function readMapBackground(storage) {
+  try {
+    return storage.getItem(MAP_BACKGROUND_KEY) === '1'
+  } catch (e) {
+    return false
+  }
+}
+
+export function writeMapBackground(storage, on) {
+  storage.setItem(MAP_BACKGROUND_KEY, on ? '1' : '0')
+}
+
 // O que o celular manda ao relógio (GET_FAVORITES e SETTINGS_CHANGED).
 export function settingsPayload(storage) {
-  return { favorites: readFavorites(storage), theme: readThemeName(storage), vibrate: readVibrate(storage) }
+  return { favorites: readFavorites(storage), theme: readThemeName(storage), vibrate: readVibrate(storage), bgMap: readMapBackground(storage) }
 }
 
 // Lê a resposta no relógio. Aceita o formato antigo (só a lista de favoritos):
 // nesse caso o tema fica o atual (fallbackTheme). vibrate: padrão ligado
-// (ou fallbackVibrate, quando a resposta não traz).
-export function parseSettingsResult(result, fallbackTheme, fallbackVibrate = true) {
+// (ou fallbackVibrate, quando a resposta não traz). bgMap: download com a tela
+// desligada (padrão desligado, ou fallbackBgMap).
+export function parseSettingsResult(result, fallbackTheme, fallbackVibrate = true, fallbackBgMap = false) {
   const vib = fallbackVibrate !== false
+  const bg = fallbackBgMap === true
   if (Array.isArray(result)) {
-    return { favorites: sanitizeFavorites(result), theme: normalizeThemeName(fallbackTheme), vibrate: vib }
+    return { favorites: sanitizeFavorites(result), theme: normalizeThemeName(fallbackTheme), vibrate: vib, bgMap: bg }
   }
   if (!result || typeof result !== 'object') {
-    return { favorites: [], theme: normalizeThemeName(fallbackTheme), vibrate: vib }
+    return { favorites: [], theme: normalizeThemeName(fallbackTheme), vibrate: vib, bgMap: bg }
   }
   return {
     favorites: sanitizeFavorites(result.favorites),
     theme: normalizeThemeName(result.theme === undefined ? fallbackTheme : result.theme),
-    vibrate: typeof result.vibrate === 'boolean' ? result.vibrate : vib
+    vibrate: typeof result.vibrate === 'boolean' ? result.vibrate : vib,
+    bgMap: typeof result.bgMap === 'boolean' ? result.bgMap : bg
   }
 }
 
