@@ -31,7 +31,7 @@ export function feedFailureCode(stage) {
 }
 
 // O que o side service manda ao relógio para um erro qualquer.
-export function errorPayload(err, fallback = ERR.FEED_DOWN) {
+export function errorPayload(err, fallback = ERR.UNKNOWN) {
   const code = err && CODES.indexOf(err.code) >= 0 ? err.code : fallback
   const message = err && err.message ? String(err.message).slice(0, 120) : code
   return { code, message }

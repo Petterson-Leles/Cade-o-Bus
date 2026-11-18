@@ -11,21 +11,10 @@ import { etaFromSummary } from '../../shared/summary'
 import { greeting } from '../../shared/text'
 import { guard } from '../../utils/crash'
 import { scheduleAlarms, parseAlarmParam, alertsOnNow } from '../../utils/alarms'
-// Tela acesa durante o download do mapa: o serviço do celular só roda com o app aberto.
-// https://docs.zepp.com/docs/reference/device-app-api/newAPI/display/setPageBrightTime/
-// https://docs.zepp.com/docs/reference/device-app-api/newAPI/display/pauseDropWristScreenOff/
-import { setPageBrightTime, resetPageBrightTime, pauseDropWristScreenOff, resetDropWristScreenOff } from '@zos/display'
-import { shouldPrompt, formatBytes, STATUS } from '../../shared/map-download'
-import { saveManifest, haveBits, tileInfo, deleteTheme, readPrompt, savePrompt, canReceiveFiles, themeProgress, absorbServiceTiles } from '../../utils/map-store'
-// Download com a tela desligada (EXPERIMENTAL): App Service contínuo (app-service/map-service.js).
-// https://docs.zepp.com/docs/guides/framework/device/app-service/
-// https://docs.zepp.com/docs/reference/device-app-api/newAPI/app-service/start/ (stop, getAllAppServices)
-// https://docs.zepp.com/docs/reference/device-app-api/newAPI/app/queryPermission/ (requestPermission)
-import { queryPermission, requestPermission } from '@zos/app'
-import { start as startService, stop as stopService, getAllAppServices } from '@zos/app-service'
-import { showToast } from '@zos/interaction'
-import { SERVICE_FILE, BG_PERMISSION, buildServiceParam, isServiceRunning, permissionFromQuery, permissionFromRequest, shouldAutoStart } from '../../shared/map-service'
-import { ensurePingFile } from '../../utils/map-files'
+import { saveManifest, haveBits, deleteTheme, canReceiveFiles } from '../../utils/map-store'
+// Sem conexão / celular sem internet / BHTrans fora do ar (shared/conn-errors.js).
+import { ERR, parseErrorField, requestFailureCode, errorScreen } from '../../shared/conn-errors'
+import { drawErrorScreen, startRetry, stopRetry, isBleConnected } from '../../utils/conn-screen'
 
 const REFRESH_MS = 30 * 1000
 // Tela redonda: margens maiores no topo e nas laterais.
@@ -51,7 +40,7 @@ Page(
     onInit: guard('tela inicial onInit', function (params) {
       // Estado próprio de cada abertura da página (não reaproveita o objeto do módulo).
       // Mantém o que a zml já colocou em this.state (ex.: messaging).
-      // view: 'loading' | 'offline' | 'list' (favorites só vale em 'list').
+      // view: 'loading' | 'error' | 'list' (favorites só vale em 'list').
       const fresh = {
         widgets: [],
         cards: [], // { fav, eta, etaMin } por favorito (widgets do tempo)
@@ -64,22 +53,12 @@ Page(
         dirty: false, // favoritos mudaram durante uma consulta: consulta de novo ao terminar
         openedAt: 0,
         vibrate: true,
-        // Mapa de BH: aviso "Baixar o mapa?" (view 'list' com mapPrompt = true),
-        // recado curto no lugar da saudação e o estado do celular por tema.
-        mapPrompt: false,
-        mapNote: '',
-        mapThemes: null,
-        mapSyncing: false,
-        // Download com a tela desligada: interruptor das configurações (bgMap), service
-        // rodando, permissão negada nesta abertura e se já tentou ligar sozinho.
-        bgMap: false,
-        bgRunning: false,
-        bgDenied: false,
-        bgTried: false,
-        bgBusy: false,
-        mapDownloading: false,
         // Aberta pelo alarme do início da janela de um ponto: { favId } (abre esse ponto).
         alarm: null,
+        mapSyncing: false,
+        // Tela de erro: código (shared/conn-errors.js) e a nova tentativa automática.
+        errorCode: null,
+        retry: null,
         destroyed: false
       }
       // No relógio, trocar o objeto this.state não funciona: atualiza o que já existe.
@@ -108,12 +87,45 @@ Page(
     },
 
     loadFavorites() {
-      if (this.state.destroyed) return
+      const s = this.state
+      if (s.destroyed) return
+      stopRetry(s.retry)
+      s.retry = null
+      // Sem Bluetooth: nem tenta (a zml esperaria o tempo do pedido).
+      if (!isBleConnected()) {
+        this.showError(ERR.NO_BLE)
+        return
+      }
       this.setView('loading')
       this.request({ method: 'GET_FAVORITES' })
-        .then(({ result } = {}) => this.applySettings(result))
-        .catch(() => this.setView('offline'))
+        .then(guard('tela inicial favoritos', ({ result } = {}) => this.applySettings(result)))
+        .catch(() => this.showError(requestFailureCode()))
     },
+
+    // Tela de erro com imagem (3 casos) e nova tentativa sozinha: na volta do
+    // Bluetooth (sem conexão) ou em 30 s (celular sem internet / BHTrans fora do ar).
+    showError(code) {
+      const s = this.state
+      if (s.destroyed) return
+      const c = errorScreen(code) ? code : ERR.NO_BLE
+      s.errorCode = c
+      if (s.timer) clearTimeout(s.timer)
+      s.timer = null
+      stopRetry(s.retry)
+      s.retry = startRetry(c, () => {
+        s.retry = null
+        if (!s.destroyed && s.view === 'error') this.loadFavorites()
+      })
+      this.setView('error', s.favorites)
+    },
+
+    // zml: o Bluetooth mudou (BasePage liga a messaging.onBleChanged).
+    onBleChanged: guard('tela inicial bluetooth', function () {
+      const s = this.state
+      if (!s || s.destroyed) return
+      if (s.view === 'error' && s.errorCode === ERR.NO_BLE && isBleConnected()) this.loadFavorites()
+      else if (s.view === 'list' && !isBleConnected()) this.showError(ERR.NO_BLE)
+    }),
 
     // Chamado quando você muda os favoritos ou o tema no celular.
     onCall: guard('tela inicial onCall', function (data) {
@@ -127,10 +139,9 @@ Page(
     }),
 
     applySettings(result) {
-      const { favorites, theme, vibrate, bgMap } = parseSettingsResult(result, this.state.theme, this.state.vibrate, this.state.bgMap)
+      const { favorites, theme, vibrate } = parseSettingsResult(result, this.state.theme, this.state.vibrate)
       this.state.theme = theme
       this.state.vibrate = vibrate
-      this.state.bgMap = bgMap
       // Alarmes do sistema: próximo início de janela de cada ponto (shared/schedule.js).
       scheduleAlarms(favorites, vibrate)
       this.setView('list', favorites)
@@ -144,20 +155,15 @@ Page(
       this.syncMap()
     },
 
-    // ---- Mapa de BH ----
+    // ---- Mapa de BH (sob demanda) ----
 
-    // Conta ao celular o que o relógio já tem (MAP_SYNC); recebe o manifesto,
-    // o estado de cada tema e o que apagar. Depois decide se mostra o aviso.
+    // Conta ao celular o que o relógio tem no cache (MAP_SYNC); recebe o manifesto
+    // (a tela do ponto precisa dele para posicionar os blocos) e o que apagar
+    // ("Limpar mapa do relógio" no celular). Os blocos chegam na tela do ponto.
     syncMap(again) {
       const s = this.state
       if (s.destroyed || s.mapSyncing || !canReceiveFiles()) return
       s.mapSyncing = true
-      // O que o App Service guardou entra no registro do app antes de contar ao celular.
-      try {
-        absorbServiceTiles(this.bgIsRunning())
-      } catch (e) {
-        console.log('Mapa: registro do service', e && e.message ? e.message : e)
-      }
       this.request({ method: 'MAP_SYNC', params: { have: haveBits() } })
         .then(
           guard('tela inicial mapa', (data) => {
@@ -165,228 +171,16 @@ Page(
             const { result } = data || {}
             if (s.destroyed || !result) return
             if (result.manifest) saveManifest(result.manifest)
-            s.mapThemes = result.themes || null
             const del = Array.isArray(result.delete) ? result.delete : []
             if (del.length > 0) {
-              if (this.bgIsRunning()) this.stopBackground()
               del.forEach((t) => deleteTheme(t))
               if (!again) this.syncMap(true)
-              return
             }
-            this.decideMapPrompt()
           })
         )
         .catch(() => {
           s.mapSyncing = false
         })
-    },
-
-    decideMapPrompt() {
-      const s = this.state
-      const phone = s.mapThemes && s.mapThemes[s.theme]
-      const ready = !!tileInfo(s.theme, 1)
-      const show = s.view === 'list' && s.favorites.length > 0 && shouldPrompt({ ready, prompt: readPrompt(), phoneStatus: phone ? phone.status : STATUS.NONE })
-      let note = ''
-      const downloading = !ready && !!phone && phone.status === STATUS.DOWNLOADING
-      if (downloading) {
-        const p = themeProgress(s.theme)
-        note = p.total > 0 ? `Mapa: chegou ${p.done} de ${p.total}` : 'Baixando o mapa pelo celular…'
-      }
-      const wasDownloading = s.mapDownloading
-      const wasRunning = s.bgRunning
-      s.mapDownloading = downloading
-      s.bgRunning = this.bgIsRunning()
-      // Com o service rodando, a tela pode apagar; sem ele, fica acesa como antes.
-      this.keepAwake(downloading && !s.bgRunning)
-      // Interruptor "Baixar com a tela desligada" ligado: liga o service ao começar/continuar.
-      if (shouldAutoStart({ bgMap: s.bgMap, downloading, ready, running: s.bgRunning, denied: s.bgDenied, tried: s.bgTried })) {
-        s.bgTried = true
-        this.startBackground()
-      }
-      // Enquanto baixa, pergunta o progresso de tempos em tempos.
-      if (s.mapPollTimer) clearTimeout(s.mapPollTimer)
-      s.mapPollTimer = note ? setTimeout(() => this.syncMap(), 5000) : null
-      if (show === s.mapPrompt && note === s.mapNote && wasDownloading === downloading && wasRunning === s.bgRunning) return
-      s.mapPrompt = show
-      s.mapNote = note
-      this.draw()
-    },
-
-    // ---- Download com a tela desligada (App Service, EXPERIMENTAL) ----
-
-    bgIsRunning() {
-      try {
-        return isServiceRunning(getAllAppServices(), SERVICE_FILE)
-      } catch (e) {
-        return false
-      }
-    },
-
-    // Pede a permissão (se preciso) e liga o service. Negada: avisa e fica no modo
-    // tela acesa.
-    startBackground() {
-      const s = this.state
-      if (s.destroyed || s.bgBusy || s.bgRunning) return
-      const denied = (text) => {
-        s.bgBusy = false
-        s.bgDenied = true
-        this.bgToast(text)
-        this.decideMapPrompt()
-        this.draw()
-      }
-      let q = 'error'
-      try {
-        q = permissionFromQuery(queryPermission({ permissions: [BG_PERMISSION] })[0])
-      } catch (e) {
-        q = 'error'
-      }
-      s.bgBusy = true
-      if (q === 'granted') {
-        this.bgLaunch()
-      } else if (q === 'ask') {
-        try {
-          requestPermission({
-            permissions: [BG_PERMISSION],
-            callback: guard('permissão do service', (res) => {
-              if (s.destroyed) return
-              const code = Array.isArray(res) ? res[0] : res
-              if (permissionFromRequest(code) === 'granted') this.bgLaunch()
-              else denied('Sem permissão: a tela fica acesa')
-            })
-          })
-        } catch (e) {
-          denied('Sem permissão: a tela fica acesa')
-        }
-      } else {
-        denied('Segundo plano indisponível: a tela fica acesa')
-      }
-    },
-
-    bgLaunch() {
-      const s = this.state
-      const fail = (text) => {
-        s.bgBusy = false
-        s.bgDenied = true
-        this.bgToast(text)
-        this.decideMapPrompt()
-        this.draw()
-      }
-      try {
-        // A página cria o arquivo de "MAP_SYNC" do service (ele só grava com a tela desligada).
-        ensurePingFile()
-        const p = themeProgress(s.theme)
-        const param = buildServiceParam({ theme: s.theme, total: p.total, have: haveBits()[s.theme], at: Date.now() })
-        // A doc chama o campo de `file`; o exemplo oficial e a zml usam `url`: manda os dois.
-        // reload: false (API 4): não volta sozinho depois de reiniciar o relógio.
-        const ret = startService({
-          file: SERVICE_FILE,
-          url: SERVICE_FILE,
-          param,
-          reload: false,
-          complete_func: guard('início do service', (info) => {
-            if (s.destroyed) return
-            s.bgBusy = false
-            if (info && info.result) {
-              s.bgRunning = true
-              this.bgToast('Pode apagar a tela: o mapa continua')
-              this.decideMapPrompt()
-              this.draw()
-            } else {
-              fail('Não deu para continuar com a tela desligada')
-            }
-          })
-        })
-        // 0 = começou (o resultado final vem no complete_func); outro número = erro (ERROR_CODE).
-        if (typeof ret === 'number' && ret !== 0) fail(`Segundo plano indisponível (${ret})`)
-      } catch (e) {
-        fail('Segundo plano indisponível: a tela fica acesa')
-      }
-    },
-
-    stopBackground() {
-      const s = this.state
-      try {
-        stopService({
-          file: SERVICE_FILE,
-          url: SERVICE_FILE,
-          complete_func: guard('parar o service', () => {
-            if (s.destroyed) return
-            s.bgRunning = this.bgIsRunning()
-            this.decideMapPrompt()
-            this.draw()
-          })
-        })
-      } catch (e) {
-        console.log('Mapa: parar service', e && e.message ? e.message : e)
-      }
-    },
-
-    bgToast(text) {
-      try {
-        showToast({ content: text })
-      } catch (e) {
-        // sem toast
-      }
-    },
-
-    // Mantém a tela acesa (e o app aberto) enquanto o mapa chega.
-    keepAwake(on) {
-      const s = this.state
-      if (!!s.awake === on) return
-      s.awake = on
-      try {
-        if (on) {
-          setPageBrightTime({ brightTime: 10 * 60 * 1000 })
-          pauseDropWristScreenOff({ duration: 0 })
-        } else {
-          resetPageBrightTime()
-          resetDropWristScreenOff()
-        }
-      } catch (e) {
-        console.log('Tela acesa indisponível', e && e.message ? e.message : e)
-      }
-    },
-
-    mapSizeText() {
-      const phone = this.state.mapThemes && this.state.mapThemes[this.state.theme]
-      const size = phone && phone.bytes ? formatBytes(phone.bytes) : ''
-      return `(~${size || '3,5 MB'}, uma vez só)`
-    },
-
-    // "Baixar": pede ao celular para começar (MAP_DOWNLOAD) e guarda a escolha.
-    acceptMap() {
-      const s = this.state
-      savePrompt('yes')
-      s.mapPrompt = false
-      s.mapNote = 'Baixando o mapa pelo celular…'
-      this.draw()
-      this.request({ method: 'MAP_DOWNLOAD', params: { theme: s.theme, have: haveBits() } })
-        .then(
-          guard('tela inicial baixar mapa', (data) => {
-            const { result, error } = data || {}
-            if (s.destroyed) return
-            if (error || !result) {
-              s.mapNote = 'Não deu para baixar o mapa agora'
-            } else {
-              if (result.manifest) saveManifest(result.manifest)
-              s.mapThemes = result.themes || s.mapThemes
-            }
-            this.draw()
-            this.decideMapPrompt()
-          })
-        )
-        .catch(() => {
-          if (s.destroyed) return
-          s.mapNote = 'Sem conexão para baixar o mapa'
-          this.draw()
-        })
-    },
-
-    // "Agora não": não pergunta de novo por alguns dias (PROMPT_SNOOZE_MS).
-    declineMap() {
-      savePrompt('later')
-      this.state.mapPrompt = false
-      this.draw()
     },
 
     setView(view, favorites) {
@@ -406,23 +200,32 @@ Page(
         if (now) s.dirty = true
         return
       }
+      if (s.view === 'error') return
       if (s.timer) clearTimeout(s.timer)
       s.timer = null
       if (s.view !== 'list' || s.favorites.length === 0) return
       s.loading = true
       const done = () => {
         s.loading = false
-        if (s.destroyed) return
+        if (s.destroyed || s.view !== 'list') return
         const again = s.dirty
         s.dirty = false
         s.timer = setTimeout(() => this.refreshSummary(false), again ? 0 : REFRESH_MS)
       }
       this.request({ method: 'GET_SUMMARY' })
-        .then((data) => {
-          const { result, error } = data || {}
-          this.applySummary(error ? null : result)
-        })
-        .catch(() => this.applySummary(null))
+        .then(
+          guard('tela inicial resumo', (data) => {
+            const { result, error } = data || {}
+            const err = parseErrorField(error)
+            // Celular sem internet ou BHTrans fora do ar: tela própria (tenta em 30 s).
+            if (err && errorScreen(err.code)) {
+              this.showError(err.code)
+              return
+            }
+            this.applySummary(err ? null : result)
+          })
+        )
+        .catch(() => this.showError(requestFailureCode()))
         .then(done, done)
     },
 
@@ -476,8 +279,7 @@ Page(
       this.clear()
 
       // Fundo do tema: primeiro widget, cobre a tela e a área rolável da lista.
-      const extra = this.bgCardVisible() ? 1 : 0
-      const listBottom = px(LIST_TOP + (favorites.length + extra) * CARD_STEP + LIST_BOTTOM_PAD)
+      const listBottom = px(LIST_TOP + favorites.length * CARD_STEP + LIST_BOTTOM_PAD)
       this.add(hmUI.widget.FILL_RECT, {
         x: 0,
         y: 0,
@@ -486,8 +288,19 @@ Page(
         color: c.bg
       })
 
-      // Saudação (ou, enquanto o mapa baixa, o recado do mapa).
-      this.text({ x: px(100), y: px(46), w: DEVICE_WIDTH - 2 * px(100), h: px(30), text: this.state.mapNote || greeting(new Date().getHours()), text_size: px(22), color: c.muted })
+      // Tela de erro (sem conexão / sem internet / BHTrans fora do ar): só ela.
+      if (view === 'error') {
+        drawErrorScreen((type, opts) => this.add(type, opts), {
+          code: this.state.errorCode,
+          theme: this.state.theme,
+          colors: c,
+          onRetry: () => this.loadFavorites()
+        })
+        return
+      }
+
+      // Saudação.
+      this.text({ x: px(100), y: px(46), w: DEVICE_WIDTH - 2 * px(100), h: px(30), text: greeting(new Date().getHours()), text_size: px(22), color: c.muted })
       this.text({ x: px(70), y: px(74), w: DEVICE_WIDTH - 2 * px(70), h: px(44), text: 'Cadê o Busão', text_size: px(34), color: c.title })
       // Barrinha em segmentos do gradiente (verde-azulado até o coral) sob o título.
       const barW = BAR_COLORS.length * BAR_SEG_W + (BAR_COLORS.length - 1) * BAR_GAP
@@ -498,12 +311,8 @@ Page(
 
       if (view === 'loading') {
         this.drawMessage('Carregando pontos...', null, c.muted)
-      } else if (view === 'offline') {
-        this.drawOffline()
       } else if (favorites.length === 0) {
         this.drawEmpty()
-      } else if (this.state.mapPrompt) {
-        this.drawMapPrompt()
       } else {
         this.drawList(favorites)
       }
@@ -533,58 +342,6 @@ Page(
       this.add(hmUI.widget.IMG, { x: px(216), y: px(176), w: px(48), h: px(48), auto_scale: true, src: busIcon(4, this.state.theme) })
       this.text({ x: MARGIN, y: px(246), w: CONTENT_W, h: px(40), text: 'Bão? Cadastre seu', text_size: px(30), color: c.text })
       this.text({ x: MARGIN, y: px(288), w: CONTENT_W, h: px(34), text: 'primeiro ponto no celular.', text_size: px(24), color: c.muted })
-    },
-
-    // Aviso da primeira abertura sem mapa: "Baixar o mapa de BH?".
-    drawMapPrompt() {
-      const c = this.colors()
-      this.text({ x: MARGIN, y: px(150), w: CONTENT_W, h: px(46), text: 'Baixar o mapa de BH?', text_size: px(32), color: c.text })
-      this.text({ x: MARGIN, y: px(196), w: CONTENT_W, h: px(32), text: this.mapSizeText(), text_size: px(24), color: c.muted })
-      this.text({ x: px(80), y: px(230), w: DEVICE_WIDTH - 2 * px(80), h: px(52), text: 'Ruas no mapa do ponto. Mapa © colaboradores do OpenStreetMap', text_size: px(18), color: c.muted, text_style: hmUI.text_style.WRAP })
-      this.add(hmUI.widget.BUTTON, {
-        x: px(110),
-        y: px(292),
-        w: DEVICE_WIDTH - 2 * px(110),
-        h: px(70),
-        radius: px(35),
-        text: 'Baixar',
-        text_size: px(28),
-        color: c.buttonText,
-        normal_color: c.button,
-        press_color: c.buttonPressed,
-        click_func: guard('aviso do mapa', () => this.acceptMap())
-      })
-      this.add(hmUI.widget.BUTTON, {
-        x: px(130),
-        y: px(372),
-        w: DEVICE_WIDTH - 2 * px(130),
-        h: px(56),
-        radius: px(28),
-        text: 'Agora não',
-        text_size: px(24),
-        color: c.text,
-        normal_color: c.card,
-        press_color: c.cardPressed,
-        click_func: guard('aviso do mapa', () => this.declineMap())
-      })
-    },
-
-    drawOffline() {
-      const c = this.colors()
-      this.drawMessage('Sem conexão', 'Abra o app Zepp no celular e deixe o Bluetooth ligado.', c.error)
-      this.add(hmUI.widget.BUTTON, {
-        x: px(110),
-        y: px(336),
-        w: DEVICE_WIDTH - 2 * px(110),
-        h: px(88),
-        radius: px(44),
-        text: 'Tentar de novo',
-        text_size: px(28),
-        color: c.buttonText,
-        normal_color: c.button,
-        press_color: c.buttonPressed,
-        click_func: () => this.loadFavorites()
-      })
     },
 
     open(fav, fromAlarm) {
@@ -662,72 +419,12 @@ Page(
       })
       // A página rola sozinha quando os cartões passam da altura da tela
       // (SCROLL_MODE_FREE é o padrão do Zepp OS); o fundo já vai até o fim da lista.
-      if (this.bgCardVisible()) this.drawBgCard(favorites.length)
-    },
-
-    // Cartão no fim da lista enquanto o mapa baixa: "Continuar com a tela desligada
-    // (experimental)" ou, com o service rodando, o aviso e "tocar para parar".
-    bgCardVisible() {
-      const s = this.state
-      return s.view === 'list' && !s.mapPrompt && s.favorites.length > 0 && (s.mapDownloading || s.bgRunning)
-    },
-
-    drawBgCard(i) {
-      const s = this.state
-      const c = this.colors()
-      const x = 72
-      const y = LIST_TOP + i * CARD_STEP
-      const w = 480 - 2 * x
-      let title = 'Continuar com a tela desligada'
-      let sub = 'experimental · gasta mais bateria'
-      let action = guard('tela desligada', () => this.startBackground())
-      if (s.bgRunning) {
-        title = 'Baixando com a tela desligada'
-        sub = 'pode fechar o app · tocar para parar'
-        action = guard('parar tela desligada', () => this.stopBackground())
-      } else if (s.bgDenied) {
-        title = 'Tela acesa até terminar'
-        sub = 'sem permissão para segundo plano'
-        action = guard('tela desligada', () => {
-          s.bgDenied = false
-          this.startBackground()
-        })
-      } else if (s.bgBusy) {
-        sub = 'ligando…'
-      }
-      this.add(hmUI.widget.BUTTON, {
-        x: px(x),
-        y: px(y),
-        w: px(w),
-        h: px(CARD_H),
-        radius: px(CARD_R),
-        text: '',
-        normal_color: c.card,
-        press_color: c.cardPressed,
-        click_func: action
-      })
-      this.add(hmUI.widget.STROKE_RECT, { x: px(x), y: px(y), w: px(w), h: px(CARD_H), radius: px(CARD_R), line_width: px(2), color: c.cardEdge })
-      // Textos sem eventos próprios por cima do botão: o toque cai no botão (como na
-      // lista, tappable reencaminha se o texto segurar o toque).
-      const t1 = this.text({ x: px(x + 16), y: px(y + 10), w: px(w - 32), h: px(36), text: title, text_size: px(23), color: c.text })
-      const t2 = this.text({ x: px(x + 16), y: px(y + 46), w: px(w - 32), h: px(26), text: sub, text_size: px(18), color: c.muted })
-      ;[t1, t2].forEach((wd) => {
-        let down = null
-        wd.addEventListener(hmUI.event.CLICK_DOWN, (info) => {
-          down = info ? { x: info.x, y: info.y } : null
-        })
-        wd.addEventListener(hmUI.event.CLICK_UP, (info) => {
-          const moved = down && info ? Math.hypot(info.x - down.x, info.y - down.y) : 0
-          down = null
-          if (moved <= px(TAP_SLOP)) action()
-        })
-      })
     },
 
     onDestroy() {
-      if (this.state.mapPollTimer) clearTimeout(this.state.mapPollTimer)
-      this.keepAwake(false)
       this.state.destroyed = true
+      stopRetry(this.state.retry)
+      this.state.retry = null
       if (this.state.timer) clearTimeout(this.state.timer)
       this.state.timer = null
     }

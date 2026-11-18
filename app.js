@@ -34,11 +34,9 @@ App(
     // isso ao evento 'newfile' do inbox no onCreate do app; fica aqui (e não numa
     // página) porque a zml remove todos os ouvintes do inbox quando uma página com
     // onReceivedFile fecha. As páginas NÃO devem definir onReceivedFile.
-    // Com o App Service do mapa rodando (app-service/map-service.js, download com a
-    // tela desligada), ele também ouve o inbox. Não há como escolher quem recebe cada
-    // arquivo: quem receber guarda. storeReceivedTile é idempotente (não apaga um
-    // bloco já guardado se o original sumiu) e cada um anota no seu registro (o app no
-    // LocalStorage, o service no JSON dele); a contagem é a união dos dois.
+    // storeReceivedTile guarda o bloco, marca no registro (LocalStorage) e apaga os
+    // usados há mais tempo quando passa do limite do cache (shared/map-demand.js). A
+    // tela do ponto relê o registro a cada 1,5 s enquanto faltam blocos da vista.
     receiveTile(file) {
       try {
         if (!file || typeof file.on !== 'function') return

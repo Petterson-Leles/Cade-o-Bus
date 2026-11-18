@@ -1,7 +1,6 @@
 // Side service: roda no app Zepp do celular, que é quem tem internet.
 // O relógio pede os dados por mensagem e recebe só o resultado já filtrado.
 import { BaseSideService, settingsLib } from '@zeppos/zml/base-side'
-import { inboxOf, onNewFile } from '../shared/transfer'
 import {
   BHTRANS_REALTIME_URL,
   parseCsv,
@@ -20,8 +19,10 @@ import { trackPassing, latestPassed } from '../shared/passing'
 import { summarizeEtas, withStreets, createFeedCache } from '../shared/summary'
 import { mapSync } from './map-sync'
 import { MAP_COMMAND_KEY } from '../shared/map-download'
-import { VIBRATE_KEY, MAP_BACKGROUND_KEY } from '../utils/favorites'
-import { parseSyncFileParams } from '../shared/map-service'
+import { parseDemandParams } from '../shared/map-demand'
+import { parseLevelIndex } from '../shared/map-frame'
+import { VIBRATE_KEY } from '../utils/favorites'
+import { codedError, feedFailureCode, errorPayload, ERR } from '../shared/conn-errors'
 // Pacote gerado por scripts/build-gtfs.mjs (GTFS oficial de BH, SUMOB/PBH).
 import GTFS_INDEX from '../data/gtfs-index'
 import GTFS_SHAPES from '../data/gtfs-shapes'
@@ -105,7 +106,7 @@ function posOnVariant(variants, r) {
 
 AppSideService(
   BaseSideService({
-    // Download do mapa de BH (app-side/map-sync.js).
+    // Mapa sob demanda (app-side/map-sync.js).
     ...mapSync,
 
     onInit() {
@@ -115,21 +116,23 @@ AppSideService(
       } catch (e) {
         console.log('Mapa: erro ao iniciar', e && e.message ? e.message : e)
       }
-      // Arquivos do relógio também pelo jeito da doc (getInbox + NEWFILE), além da zml.
-      try {
-        if (typeof transferFile !== 'undefined') onNewFile(inboxOf(transferFile), (file) => this.onReceivedFile(file)) // eslint-disable-line no-undef
-      } catch (e) {
-        console.log('Mapa: inbox do celular', e && e.message ? e.message : e)
-      }
     },
 
+    // Erros com código (shared/conn-errors.js): sem resposta = celular sem internet;
+    // resposta com erro/formato inválido = BHTrans fora do ar.
     async downloadFeed() {
-      // this.fetch da zml repassa ao fetch nativo com timeout padrão de 10 s.
-      const response = await withTimeout(
-        this.fetch({ url: BHTRANS_REALTIME_URL, method: 'GET', timeout: FETCH_TIMEOUT_MS }),
-        FETCH_TIMEOUT_MS
-      )
-      return parseCsv(readFeedResponse(response))
+      let response
+      try {
+        // this.fetch da zml repassa ao fetch nativo com timeout padrão de 10 s.
+        response = await withTimeout(this.fetch({ url: BHTRANS_REALTIME_URL, method: 'GET', timeout: FETCH_TIMEOUT_MS }), FETCH_TIMEOUT_MS)
+      } catch (e) {
+        throw codedError(feedFailureCode('fetch'), e && e.message ? e.message : 'Sem resposta')
+      }
+      try {
+        return parseCsv(readFeedResponse(response))
+      } catch (e) {
+        throw codedError(feedFailureCode('response'), e && e.message ? e.message : 'Resposta inválida')
+      }
     },
 
     feedRows() {
@@ -137,7 +140,8 @@ AppSideService(
       return this.feed.get()
     },
 
-    async getBuses(params) {
+    // demand: parseDemandParams (mapa sob demanda; shared/map-demand.js) ou null.
+    async getBuses(params, demand = null) {
       const rows = await this.feedRows()
       const { buses, route, passed: passedRaw, onRoute } = analyze(params, rows)
       const variants = route ? route.variants : []
@@ -188,7 +192,15 @@ AppSideService(
       map.center = [Math.round(frame.center[0] * 10) / 10, Math.round(frame.center[1] * 10) / 10]
       // Para o relógio animar o ícone entre as atualizações (pixels de design por segundo).
       map.speed = buses[0] ? Math.round(speedPxPerSec(buses[0].speedKmh, frame.k) * 100) / 100 : 0
-      return { buses, map }
+      // Mapa sob demanda: manda já os blocos da vista que faltam no relógio (na frente
+      // da fila) e, se o relógio não tem, o manifesto curto.
+      let tiles = null
+      try {
+        tiles = this.mapOnDemand(demand, map.level, map.center, { lat: params.lat, lon: params.lon })
+      } catch (e) {
+        console.log('Mapa: sob demanda', e && e.message ? e.message : e)
+      }
+      return tiles ? { buses, map, tiles } : { buses, map }
     },
 
     // Próximo ônibus de todos os pontos salvos com um único download do feed.
@@ -222,24 +234,35 @@ AppSideService(
           .then((result) => res(null, { result }))
           .catch((e) => {
             console.log('Erro no resumo da BHTrans:', e && e.message ? e.message : e)
-            res(null, { error: 'Sem conexão com a BHTrans' })
+            res(null, { error: errorPayload(e) })
           })
       } else if (method === 'GET_BUSES') {
         const params = parseBusParams(req.params)
         if (!params) {
-          res(null, { error: 'Ponto inválido' })
+          res(null, { error: { code: ERR.BAD_REQUEST, message: 'Ponto inválido' } })
           return
         }
-        this.getBuses(params)
+        const demand = parseDemandParams(req.params && req.params.tile)
+        if (!this.mapReady) this.mapInit()
+        // Relógio ainda sem o manifesto do mapa: o celular calcula os níveis dos blocos.
+        if (demand && !params.levels) {
+          const levels = this.mapLevelsFor(demand)
+          if (levels) {
+            params.levels = levels
+            const level = parseLevelIndex(req.params.level, levels.length)
+            if (level !== null) params.level = level
+          }
+        }
+        this.getBuses(params, demand)
           .then((result) => res(null, { result }))
           .catch((e) => {
             console.log('Erro ao consultar a BHTrans:', e && e.message ? e.message : e)
-            res(null, { error: 'Sem conexão com a BHTrans' })
+            res(null, { error: errorPayload(e) })
           })
-      } else if (method === 'MAP_SYNC' || method === 'MAP_DOWNLOAD') {
-        // Mapa de BH: o relógio manda o que já tem e (no "Baixar") pede para começar.
-        const run = method === 'MAP_SYNC' ? this.mapOnSync(req.params) : this.mapOnDownload(req.params)
-        run
+      } else if (method === 'MAP_SYNC') {
+        // Mapa de BH: o relógio manda o que tem no cache; recebe o manifesto e o que apagar.
+        if (!this.mapReady) this.mapInit()
+        this.mapOnSync(req.params)
           .then((result) => res(null, { result }))
           .catch((e) => {
             console.log('Mapa:', e && e.message ? e.message : e)
@@ -256,27 +279,13 @@ AppSideService(
       if (!change) return
       // Botões do mapa na tela de configurações.
       if (change.key === MAP_COMMAND_KEY) {
+        if (!this.mapReady) this.mapInit()
         this.mapHandleCommand(change.newValue)
         return
       }
-      if (change.key !== FAVORITES_KEY && change.key !== THEME_KEY && change.key !== VIBRATE_KEY && change.key !== MAP_BACKGROUND_KEY) return
+      if (change.key !== FAVORITES_KEY && change.key !== THEME_KEY && change.key !== VIBRATE_KEY) return
+      if (change.key === FAVORITES_KEY && this.mapReady) this.mapOnFavorites()
       this.call({ method: 'SETTINGS_CHANGED', result: this.settingsForWatch() })
-    },
-
-    // Arquivo vindo do relógio (outbox do TransferFile). A zml liga isto ao evento
-    // 'file' do inbox e, se o celular abriu o side service por causa do arquivo
-    // (sideService.launchReasons.fileTransfer), chama já no início, antes do onInit.
-    // O App Service do relógio (app-service/map-service.js) manda assim o seu
-    // "MAP_SYNC" (ele não tem a mensageria da zml): só soma bits e retoma a fila.
-    onReceivedFile(file) {
-      try {
-        const p = parseSyncFileParams(file && file.params)
-        if (!p) return
-        if (!this.mapReady) this.mapInit()
-        this.mapOnSync({ have: p.have, merge: true }).catch((e) => console.log('Mapa: sync do service', e && e.message ? e.message : e))
-      } catch (e) {
-        console.log('Mapa: arquivo do relógio', e && e.message ? e.message : e)
-      }
     },
 
     onRun() {},

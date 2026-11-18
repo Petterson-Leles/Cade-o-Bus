@@ -1,108 +1,78 @@
-// Download do mapa de BH no side service (celular) e envio ao relógio.
+// Mapa sob demanda no side service (celular): o celular guarda os blocos e manda ao
+// relógio só os que cobrem a vista aberta (e, com baixa prioridade, os vizinhos).
 // Métodos espalhados no BaseSideService (como os módulos dos exemplos da zml).
 //
-// Fluxo de cada bloco, um de cada vez (fila sequencial, sem saturar o Bluetooth):
-// 1. baixa o PNG da internet: network.downloader.downloadFile (this.download da zml)
+// Cada bloco:
+// 1. já convertido no cache do celular (data://download/cob-c-<nome>)? usa; senão
+//    baixa o PNG: network.downloader.downloadFile (this.download da zml)
 //    https://docs.zepp.com/docs/reference/side-service-api/download-file/
-// 2. converte para o formato de imagem do relógio: image.convert (this.convert da zml)
+//    e converte para o formato do relógio: image.convert (this.convert da zml)
 //    https://docs.zepp.com/docs/reference/side-service-api/image-convert/
-// 3. manda ao relógio pela outbox do TransferFile (this.sendFile da zml) e espera
-//    readyState 'transferred': https://docs.zepp.com/docs/reference/side-service-api/transfer-file/
-// O progresso fica no settingsStorage (chave mapDownload, um estado por tema) e o
-// relógio manda o mapa de bits do que já tem (MAP_SYNC), então parar no meio só
-// faz continuar de onde parou. settingsStorage:
-// https://docs.zepp.com/docs/reference/side-service-api/settings-storage/
+// 2. manda pela outbox do TransferFile (getOutbox().enqueueFile, com this.sendFile da
+//    zml de reserva) e espera readyState 'transferred':
+//    https://docs.zepp.com/docs/reference/side-service-api/transfer-file/
+// O side service não tem API de arquivos: o que já está no cache do celular fica
+// anotado em bits no settingsStorage (mapPhoneCache). Se um arquivo do cache sumiu,
+// o envio falha e o bloco é baixado de novo.
+// Lógica pura em shared/map-demand.js e shared/map-download.js.
 import { settingsLib } from '@zeppos/zml/base-side'
 import { outboxOf, readyStateOf as stateOf } from '../shared/transfer'
 import { withTimeout } from '../shared/bhtrans'
-import { MAP_MANIFEST_URL, MAP_THEMES, parseManifest, compactManifest, tileList, prioritizeTiles, normalizeBits, mergeBits, countBits } from '../shared/map-tiles'
+import { MAP_MANIFEST_URL, MAP_THEMES, parseManifest, compactManifest, tileList, normalizeBits, hasBit, setBit, designLevels, centerLatLon } from '../shared/map-tiles'
+import { MAP_MANIFEST_KEY, MAP_COMMAND_KEY, MAP_PHONE_CACHE_KEY, readMapStates, writeMapStates, applyWatchBits, cleanThemeState, parseCommand, tileParams } from '../shared/map-download'
+import { manifestTag, demandPlan, enqueueDemand, takeNext, dropTheme, cleanPhoneCache, phoneTilePath, tilesNearPoints, PRIO } from '../shared/map-demand'
+import { parseLevels } from '../shared/map-frame'
 import { readFavorites } from '../utils/favorites'
-import {
-  STATUS,
-  MAP_MANIFEST_KEY,
-  MAP_COMMAND_KEY,
-  readMapStates,
-  writeMapStates,
-  applyWatchBits,
-  mergeWatchBits,
-  markDone,
-  missingTiles,
-  runQueue,
-  stoppedByUser,
-  parseCommand,
-  tileParams
-} from '../shared/map-download'
+import { readThemeName } from '../utils/colors'
 
 const MANIFEST_TIMEOUT_MS = 15 * 1000
 const MANIFEST_MAX_AGE_MS = 7 * 24 * 3600 * 1000
-const DOWNLOAD_TIMEOUT_MS = 30 * 1000
+const DOWNLOAD_TIMEOUT_MS = 20 * 1000
 const CONVERT_TIMEOUT_MS = 20 * 1000
-const TRANSFER_TIMEOUT_MS = 90 * 1000
-// Salva o progresso no settingsStorage no máximo a cada tanto (cada gravação
+// Um bloco (~8–10 KB) leva poucos segundos pelo Bluetooth; mais que isso, desiste.
+const TRANSFER_TIMEOUT_MS = 45 * 1000
+// Grava estado e cache no settingsStorage no máximo a cada tanto (cada gravação
 // redesenha a tela de configurações).
-const SAVE_EVERY_MS = 1500
+const SAVE_EVERY_MS = 3000
+// Falhas seguidas de envio: a fila para até o próximo pedido do relógio.
+const MAX_FAILS = 3
+// Pré-cache no celular (só internet, nada vai ao relógio): raio em volta dos pontos.
+const WARM_KM = 0.8
+const WARM_MAX = 40
 const COMMAND_DONE_KEY = 'mapCommandDone'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const errText = (e) => (e && e.message ? String(e.message) : String(e))
 
-// Estado do arquivo no evento 'change' (a doc chama o campo de `date`; os exemplos, de `data`).
-const readyStateOf = (ev) => {
-  const d = ev && (ev.data || ev.date)
-  return d && d.readyState
-}
-
 export const mapSync = {
-  // Chamado no onInit do side service.
-  // Pode vir antes do onInit (arquivo do relógio que acordou o side service).
+  // Chamado no onInit do side service (ou antes, se um arquivo do relógio o acordou).
   mapInit() {
     this.mapReady = true
-    this.mapJob = null // { theme, stop } do tema baixando agora
-    this.mapWaiting = [] // temas na fila
+    this.mapQueue = [] // fila com prioridade (shared/map-demand.js)
+    this.mapSeq = 0
+    this.mapBusy = false
+    this.mapFails = 0
+    this.mapSentAt = { dark: {}, light: {} } // { i: quando foi entregue }
+    this.mapPrepared = new Map() // 'tema:i' -> Promise<{ out }>
+    this.mapMem = null // manifesto validado em memória
+    this.mapLists = {} // tileList por tema
+    this.mapCache = null
     this.mapStatesCache = null
     this.mapLastSave = 0
-    // Manifesto em cache para a tela de configurações mostrar o tamanho.
-    this.mapManifest(false).catch(() => {})
+    this.mapDirty = false
+    this.mapWarming = false
+    this.mapManifest(false)
+      .then(() => this.mapWarm())
+      .catch(() => {})
     // Comando que chegou com o side service fechado.
     this.mapHandleCommand(settingsLib.getItem(MAP_COMMAND_KEY))
-    // Um download que estava em andamento continua (se o relógio não estiver por
-    // perto, a fila pausa e volta quando o app do relógio abrir).
-    const states = this.mapStates()
-    MAP_THEMES.forEach((t) => {
-      if (states[t].status === STATUS.DOWNLOADING) this.mapStart(t)
-    })
   },
 
-  mapStates() {
-    if (!this.mapStatesCache) this.mapStatesCache = readMapStates(settingsLib)
-    return this.mapStatesCache
-  },
-
-  // force: grava já (mudança de status); senão no máximo a cada SAVE_EVERY_MS.
-  mapSave(force) {
-    const now = Date.now()
-    if (!force && now - this.mapLastSave < SAVE_EVERY_MS) return
-    this.mapLastSave = now
-    const mine = this.mapStatesCache || this.mapStates()
-    // A tela de configurações muda o estado direto (pausar/apagar): não sobrescrever.
-    const stored = readMapStates(settingsLib)
-    MAP_THEMES.forEach((t) => {
-      if (stoppedByUser(stored[t]) && mine[t].status === STATUS.DOWNLOADING) {
-        mine[t] = { ...mine[t], status: stored[t].status, byUser: stored[t].byUser, step: '' }
-        this.mapStopTheme(t)
-      }
-    })
-    this.mapStatesCache = writeMapStates(settingsLib, mine)
-  },
-
-  mapSet(theme, patch, force = true) {
-    const states = this.mapStates()
-    states[theme] = { ...states[theme], ...patch, updatedAt: Date.now() }
-    this.mapSave(force)
-  },
+  // ---- Manifesto ----
 
   // Manifesto validado (cache de 7 dias no settingsStorage; force = baixa de novo).
   async mapManifest(force) {
+    if (this.mapMem && !force) return this.mapMem
     let cached = null
     try {
       cached = JSON.parse(settingsLib.getItem(MAP_MANIFEST_KEY) || 'null')
@@ -112,7 +82,7 @@ export const mapSync = {
     const fresh = cached && cached.manifest && Date.now() - (Number(cached.at) || 0) < MANIFEST_MAX_AGE_MS
     if (fresh && !force) {
       const m = parseManifest(cached.manifest)
-      if (m) return m
+      if (m) return this.mapSetManifest(m)
     }
     try {
       const res = await withTimeout(this.fetch({ url: MAP_MANIFEST_URL, method: 'GET', timeout: MANIFEST_TIMEOUT_MS }), MANIFEST_TIMEOUT_MS)
@@ -121,140 +91,242 @@ export const mapSync = {
       const m = parseManifest(res.body)
       if (!m) throw new Error('Manifesto do mapa inválido')
       settingsLib.setItem(MAP_MANIFEST_KEY, JSON.stringify({ at: Date.now(), manifest: m }))
-      return m
+      return this.mapSetManifest(m)
     } catch (e) {
       // Sem internet: usa o cache velho se houver.
       const m = cached && parseManifest(cached.manifest)
-      if (m) return m
+      if (m) return this.mapSetManifest(m)
       throw e
     }
   },
 
-  // Etapa do bloco atual, para a tela de configurações mostrar onde está.
-  mapStep(theme, text) {
-    const states = this.mapStates()
-    states[theme] = { ...states[theme], step: text, stepAt: Date.now() }
-    this.mapSave(false)
-  },
-
-  // Põe o tema na fila (não roda dois downloads ao mesmo tempo).
-  mapStart(theme) {
-    if (MAP_THEMES.indexOf(theme) < 0) return
-    const st = this.mapStates()[theme]
-    if (st.status !== STATUS.READY) this.mapSet(theme, { status: STATUS.DOWNLOADING, error: '', byUser: false })
-    if (this.mapJob && this.mapJob.theme === theme && !this.mapJob.stop) return
-    if (this.mapWaiting.indexOf(theme) < 0) this.mapWaiting.push(theme)
-    // Um job parado ainda pode estar terminando o bloco atual: o próximo só
-    // começa quando ele acabar (mapPump no fim do job).
-    if (!this.mapJob) this.mapPump()
-  },
-
-  mapPump() {
-    const theme = this.mapWaiting.shift()
-    if (!theme) return
-    const job = { theme, stop: false }
-    this.mapJob = job
-    this.mapRunTheme(job)
-      .catch((e) => {
-        console.log('Mapa: erro', errText(e))
-        if (!job.stop) this.mapSet(theme, { status: STATUS.ERROR, error: errText(e).slice(0, 100) })
-      })
-      .then(() => {
-        if (this.mapJob === job) this.mapJob = null
-        if (!this.mapJob) this.mapPump()
-      })
-  },
-
-  async mapRunTheme(job) {
-    const { theme } = job
-    const manifest = await this.mapManifest(false)
-    const list = tileList(manifest, theme)
-    if (list.length === 0) throw new Error('Tema sem mapa')
-    const states = this.mapStates()
-    const st = states[theme]
-    const total = list.length
-    if (st.total !== total) states[theme] = { ...st, total, have: normalizeBits(st.total === total ? st.have : '', total) }
-    // Primeiro a cidade no zoom afastado, depois os arredores dos seus pontos.
-    let favs = []
-    try {
-      favs = readFavorites(settingsLib)
-    } catch (e) {
-      favs = []
-    }
-    const missing = prioritizeTiles(missingTiles(list, states[theme].have), manifest, favs)
-    // Enquanto um bloco vai pelo Bluetooth, o próximo já é baixado e convertido.
-    const prepared = new Map()
-    const prepare = (tile) => {
-      if (!prepared.has(tile.i)) prepared.set(tile.i, this.mapPrepareTile(theme, tile))
-      return prepared.get(tile.i)
-    }
-    const pos = new Map(missing.map((t, k) => [t.i, k]))
-    if (missing.length === 0) {
-      this.mapSet(theme, { status: STATUS.READY, error: '' })
-      this.mapNotify({ theme })
-      return
-    }
-    this.mapSet(theme, { status: STATUS.DOWNLOADING, error: '' })
-    const result = await runQueue({
-      tiles: missing,
-      gapMs: 0,
-      process: async (tile) => {
-        let ready
-        try {
-          ready = await prepare(tile)
-        } catch (e) {
-          prepared.delete(tile.i) // tenta de novo do zero
-          throw e
-        }
-        const next = missing[pos.get(tile.i) + 1]
-        if (next && !job.stop) prepare(next).catch(() => {})
-        this.mapStep(theme, `bloco ${tile.i + 1}: enviando ao relógio`)
-        try {
-          await this.mapSendFile(ready.out, tileParams(theme, tile, total))
-        } finally {
-          prepared.delete(tile.i)
-        }
-      },
-      onDone: (tile) => {
-        if (job.stop) return
-        const s = this.mapStates()
-        s[theme] = markDone(s[theme], tile.i)
-        this.mapSave(s[theme].status === STATUS.READY)
-      },
-      onFail: (tile, err, tries) => {
-        console.log(`Mapa: bloco ${tile.name} falhou (${tries}):`, errText(err))
-        this.mapStep(theme, `bloco ${tile.i + 1}: falhou (tentativa ${tries}): ${errText(err).slice(0, 60)}`)
-      },
-      // Para também se a pessoa pausou/apagou na tela de configurações.
-      shouldStop: () => job.stop || stoppedByUser(readMapStates(settingsLib)[theme]),
-      wait: sleep
+  mapSetManifest(m) {
+    this.mapMem = m
+    this.mapCompact = compactManifest(m)
+    this.mapTag = manifestTag(this.mapCompact)
+    this.mapLists = {}
+    const totals = {}
+    MAP_THEMES.forEach((t) => {
+      this.mapLists[t] = tileList(m, t)
+      totals[t] = this.mapLists[t].length
     })
-    if (job.stop) return
-    if (result.status === 'failed') {
-      this.mapSet(theme, { status: STATUS.PAUSED, error: `Parou: ${String(result.error || 'erro desconhecido').slice(0, 70)}. Continua quando abrir o app no relógio.`, byUser: false })
-      return
+    let raw = null
+    try {
+      raw = settingsLib.getItem(MAP_PHONE_CACHE_KEY)
+    } catch (e) {
+      raw = null
     }
-    const s = this.mapStates()[theme]
-    this.mapSet(theme, { status: s.done >= s.total ? STATUS.READY : STATUS.PAUSED })
-    if (s.done >= s.total) this.mapNotify({ theme })
+    this.mapCache = cleanPhoneCache(raw, this.mapTag, totals)
+    return m
   },
 
-  // Baixa e converte um bloco (sem enviar). Resolve com { out } (arquivo pronto).
-  async mapPrepareTile(theme, tile) {
+  // Manifesto já carregado, sem esperar (null: ainda carregando; tenta de novo).
+  mapManifestNow() {
+    if (this.mapMem) return this.mapMem
+    if (!this.mapLoading) {
+      this.mapLoading = true
+      this.mapManifest(false)
+        .catch((e) => console.log('Mapa: manifesto', errText(e)))
+        .then(() => {
+          this.mapLoading = false
+        })
+    }
+    return null
+  },
+
+  // ---- Estado (o que o relógio tem) e cache do celular, no settingsStorage ----
+
+  mapStates() {
+    if (!this.mapStatesCache) this.mapStatesCache = readMapStates(settingsLib)
+    return this.mapStatesCache
+  },
+
+  mapSave(force) {
+    const now = Date.now()
+    if (!force && (!this.mapDirty || now - this.mapLastSave < SAVE_EVERY_MS)) {
+      if (this.mapDirty && !this.mapSaveTimer) {
+        this.mapSaveTimer = setTimeout(() => {
+          this.mapSaveTimer = null
+          this.mapSave(false)
+        }, SAVE_EVERY_MS)
+      }
+      return
+    }
+    this.mapLastSave = now
+    this.mapDirty = false
+    // "Limpar" da tela de configurações (marcado lá direto): não desfaz.
+    const stored = readMapStates(settingsLib)
+    const mine = this.mapStates()
+    MAP_THEMES.forEach((t) => {
+      if (stored[t].deleting && !mine[t].deleting) mine[t] = { ...mine[t], deleting: true }
+    })
+    this.mapStatesCache = writeMapStates(settingsLib, mine)
+    if (this.mapCache) settingsLib.setItem(MAP_PHONE_CACHE_KEY, JSON.stringify(this.mapCache))
+  },
+
+  mapCacheHas(theme, i) {
+    return !!(this.mapCache && this.mapCache.themes[theme] && hasBit(this.mapCache.themes[theme], i))
+  },
+
+  mapCacheMark(theme, i, on) {
+    if (!this.mapCache || !this.mapCache.themes[theme]) return
+    this.mapCache.themes[theme] = setBit(this.mapCache.themes[theme], i, on)
+    this.mapDirty = true
+  },
+
+  // ---- Pedido do relógio (junto do GET_BUSES) ----
+
+  // Níveis do mapa (px de design por km) para o enquadramento, quando o relógio ainda
+  // não tem o manifesto: o celular calcula com a escala da tela do relógio.
+  mapLevelsFor(demand) {
+    const m = this.mapManifestNow()
+    if (!m || !demand) return null
+    return parseLevels(designLevels(this.mapCompact, demand.theme, demand.scale))
+  },
+
+  // A tela do ponto pediu o mapa: d = parseDemandParams (tema, bits, raio, escala,
+  // etiqueta do manifesto); level/centerM: enquadramento escolhido; stop: { lat, lon }.
+  // Põe na frente da fila os blocos da vista que faltam no relógio e, atrás, os
+  // vizinhos. Devolve o que vai na resposta: { tag, manifest? (se o relógio não tem
+  // este), queued }.
+  mapOnDemand(d, level, centerM, stop) {
+    const m = this.mapManifestNow()
+    if (!m || !d) return null
+    const out = { tag: this.mapTag }
+    if (d.mv !== this.mapTag) out.manifest = this.mapCompact
+    const list = this.mapLists[d.theme]
+    if (!list || list.length === 0) return out
+    const total = list.length
+    const have = normalizeBits(d.mv === this.mapTag ? d.have : '', total)
+    // O relógio é quem manda no que tem (cache LRU): atualiza o "X blocos guardados".
+    const states = this.mapStates()
+    if (!states[d.theme].deleting && d.mv === this.mapTag && states[d.theme].have !== have) {
+      states[d.theme] = applyWatchBits(states[d.theme], have, total)
+      this.mapDirty = true
+      this.mapSave(false)
+    }
+    if (states[d.theme].deleting || !Number.isInteger(level) || !(d.r > 0)) return out
+    const center = centerLatLon(stop, centerM, this.mapCompact.m)
+    const plan = demandPlan({ compact: this.mapCompact, theme: d.theme, level, center, r: d.r, have, sentAt: this.mapSentAt[d.theme], now: Date.now() })
+    this.mapSeq += 1
+    this.mapQueue = enqueueDemand(this.mapQueue, plan, { theme: d.theme, seq: this.mapSeq })
+    this.mapFails = 0
+    out.queued = plan.filter((p) => p.prio === PRIO.VIEW).length
+    this.mapPump()
+    return out
+  },
+
+  // Um bloco por vez no Bluetooth; enquanto um vai, o próximo já é preparado.
+  mapPump() {
+    if (this.mapBusy) return
+    const { item, rest } = takeNext(this.mapQueue)
+    if (!item) return
+    this.mapQueue = rest
+    const tile = this.mapLists[item.theme] && this.mapLists[item.theme][item.i]
+    if (!tile) {
+      this.mapPump()
+      return
+    }
+    this.mapBusy = true
+    const total = this.mapLists[item.theme].length
+    const next = this.mapQueue[0]
+    this.mapSendTile(item.theme, tile, total, next)
+      .then(
+        () => {
+          this.mapFails = 0
+          this.mapSentAt[item.theme][item.i] = Date.now()
+        },
+        (e) => {
+          this.mapFails += 1
+          console.log(`Mapa: bloco ${tile.name} falhou:`, errText(e))
+          // Um bloco da vista tenta de novo uma vez (no fim da fila de mesma prioridade).
+          if (item.prio === PRIO.VIEW && !item.retried) this.mapQueue = enqueueDemand(this.mapQueue, [{ ...item, retried: true, prio: PRIO.NEAR }], { theme: item.theme, seq: 0 })
+        }
+      )
+      .then(() => {
+        this.mapBusy = false
+        this.mapSave(false)
+        if (this.mapFails >= MAX_FAILS) {
+          // Relógio longe ou celular sem internet: espera o próximo pedido.
+          this.mapQueue = []
+          this.mapFails = 0
+          return
+        }
+        this.mapPump()
+      })
+  },
+
+  // Prepara (cache ou internet) e envia. Se o arquivo do cache falhar, baixa de novo.
+  async mapSendTile(theme, tile, total, next) {
+    let ready = await this.mapPrepare(theme, tile)
+    if (next && this.mapLists[next.theme] && this.mapLists[next.theme][next.i]) this.mapPrepare(next.theme, this.mapLists[next.theme][next.i]).catch(() => {})
+    try {
+      await this.mapSendFile(ready.out, tileParams(theme, tile, total))
+    } catch (e) {
+      if (!ready.cached) throw e
+      this.mapCacheMark(theme, tile.i, false)
+      ready = await this.mapPrepare(theme, tile)
+      await this.mapSendFile(ready.out, tileParams(theme, tile, total))
+    }
+  },
+
+  // Bloco pronto para enviar: { out, cached }. Uma preparação por bloco de cada vez.
+  mapPrepare(theme, tile) {
+    const key = `${theme}:${tile.i}`
+    if (this.mapCacheHas(theme, tile.i)) return Promise.resolve({ out: phoneTilePath(theme, tile.k, tile.x, tile.y), cached: true })
+    if (this.mapPrepared.has(key)) return this.mapPrepared.get(key)
+    const p = this.mapDownloadConvert(theme, tile).then(
+      (out) => {
+        this.mapPrepared.delete(key)
+        return { out, cached: false }
+      },
+      (e) => {
+        this.mapPrepared.delete(key)
+        throw e
+      }
+    )
+    this.mapPrepared.set(key, p)
+    return p
+  },
+
+  async mapDownloadConvert(theme, tile) {
     const png = `data://download/cob-${tile.name}`
-    const converted = `data://download/cob-c-${tile.name}`
-    const n = tile.i + 1
-    this.mapStep(theme, `bloco ${n}: baixando da internet`)
+    const converted = phoneTilePath(theme, tile.k, tile.x, tile.y)
     await this.mapDownloadFile(tile.url, png)
-    this.mapStep(theme, `bloco ${n}: convertendo`)
     const conv = await withTimeout(this.mapConvert({ filePath: png, targetFilePath: converted }), CONVERT_TIMEOUT_MS)
     const out = (conv && conv.targetFilePath) || converted
-    const size = conv && conv.options && Number(conv.options.size)
-    if (size > 0) {
-      const s = this.mapStates()
-      s[theme] = { ...s[theme], stored: (s[theme].stored || 0) + size }
+    if (out === converted) this.mapCacheMark(theme, tile.i, true)
+    return out
+  },
+
+  // Pré-cache no celular em volta dos pontos salvos (só internet, rápido; nada vai ao
+  // relógio). Anda só com a fila do relógio vazia.
+  async mapWarm() {
+    if (this.mapWarming || !this.mapMem) return
+    this.mapWarming = true
+    try {
+      let favs = []
+      try {
+        favs = readFavorites(settingsLib)
+      } catch (e) {
+        favs = []
+      }
+      const theme = readThemeName(settingsLib)
+      const list = tilesNearPoints(this.mapLists[theme], this.mapMem, favs, WARM_KM, WARM_MAX).filter((t) => !this.mapCacheHas(theme, t.i))
+      for (const tile of list) {
+        while (this.mapBusy || this.mapQueue.length > 0) await sleep(1000)
+        try {
+          await this.mapPrepare(theme, tile)
+        } catch (e) {
+          console.log('Mapa: pré-cache parou:', errText(e))
+          break
+        }
+        this.mapSave(false)
+        await sleep(200)
+      }
+    } finally {
+      this.mapWarming = false
     }
-    return { out }
   },
 
   mapConvert(opts) {
@@ -335,13 +407,6 @@ export const mapSync = {
     })
   },
 
-  // Para o tema (pausar/apagar).
-  mapStopTheme(theme) {
-    this.mapWaiting = this.mapWaiting.filter((t) => t !== theme)
-    // O job segue em this.mapJob até o bloco atual terminar; aí o próximo começa.
-    if (this.mapJob && this.mapJob.theme === theme) this.mapJob.stop = true
-  },
-
   // Avisa o app do relógio, se estiver aberto, que o mapa mudou (ele sincroniza).
   mapNotify(result) {
     try {
@@ -354,37 +419,29 @@ export const mapSync = {
   // Comando da tela de configurações (chave mapCommand do settingsStorage).
   mapHandleCommand(raw) {
     const cmd = parseCommand(raw)
-    if (!cmd) return
-    // A tela de configurações já mudou o estado: relê do settingsStorage.
+    if (!cmd || cmd.action !== 'delete') return
+    // A tela de configurações já marcou "limpando": relê do settingsStorage.
     this.mapStatesCache = null
     const doneAt = Number(settingsLib.getItem(COMMAND_DONE_KEY)) || 0
     if (cmd.at && cmd.at <= doneAt) return
     settingsLib.setItem(COMMAND_DONE_KEY, String(cmd.at || Date.now()))
     const themes = cmd.theme === 'all' ? MAP_THEMES : [cmd.theme]
-    if (cmd.action === 'download') {
-      themes.forEach((t) => this.mapStart(t))
-    } else if (cmd.action === 'pause') {
-      themes.forEach((t) => {
-        this.mapStopTheme(t)
-        if (this.mapStates()[t].status === STATUS.DOWNLOADING) this.mapSet(t, { status: STATUS.PAUSED, error: '', byUser: true })
-      })
-    } else if (cmd.action === 'delete') {
-      themes.forEach((t) => {
-        this.mapStopTheme(t)
-        const s = this.mapStates()[t]
-        if (s.status !== STATUS.NONE || s.done > 0) this.mapSet(t, { status: STATUS.DELETING, error: '' })
-      })
-      // Se o app do relógio estiver aberto, ele sincroniza e apaga na hora.
-      this.mapNotify({ delete: themes })
-    }
+    themes.forEach((t) => {
+      this.mapQueue = dropTheme(this.mapQueue, t)
+      this.mapSentAt[t] = {}
+    })
+    // Se o app do relógio estiver aberto, ele sincroniza e apaga na hora.
+    this.mapNotify({ delete: themes })
   },
 
-  // MAP_SYNC do relógio: params.have = { dark: hex, light: hex } do que ele tem.
-  // Devolve o manifesto curto, o estado de cada tema e o que apagar.
-  // params.merge: veio do App Service do relógio (que pode não enxergar tudo o que o
-  // app guardou): só soma bits, não tira nem apaga.
+  // Favoritos mudaram: pré-cache em volta dos pontos novos.
+  mapOnFavorites() {
+    this.mapWarm().catch(() => {})
+  },
+
+  // MAP_SYNC do relógio (tela inicial): params.have = { dark: hex, light: hex }.
+  // Devolve o manifesto curto, quantos blocos cada tema tem e o que apagar.
   async mapOnSync(params) {
-    const merge = !!(params && params.merge)
     let manifest = null
     try {
       manifest = await this.mapManifest(false)
@@ -396,40 +453,19 @@ export const mapSync = {
     const del = []
     const out = {}
     MAP_THEMES.forEach((t) => {
-      const total = manifest ? tileList(manifest, t).length : states[t].total
-      const running = !!this.mapJob && this.mapJob.theme === t && !this.mapJob.stop
+      const total = manifest ? this.mapLists[t].length : states[t].total
       const watchHex = normalizeBits(have[t], total)
-      if (merge && states[t].status !== STATUS.DELETING) {
-        states[t] = mergeWatchBits(states[t], watchHex, total)
-      } else if (merge) {
-        // apagando: espera o app do relógio abrir
-      } else if (states[t].status === STATUS.DELETING) {
-        if (countBits(watchHex, total) > 0) del.push(t)
-        else states[t] = { ...states[t], status: STATUS.NONE, have: '', done: 0, stored: 0, error: '' }
-      } else if (running) {
-        // Rodando: só soma (o relógio pode ainda não ter registrado o último bloco).
-        states[t] = { ...states[t], total, have: mergeBits(states[t].have, watchHex, total) }
+      const s = cleanThemeState(states[t])
+      if (s.deleting) {
+        if (/[1-9a-f]/.test(watchHex)) del.push(t)
+        else states[t] = { ...applyWatchBits(s, '', total), deleting: false }
       } else {
-        states[t] = applyWatchBits(states[t], watchHex, total)
+        states[t] = applyWatchBits(s, watchHex, total)
       }
-      // Parou no meio sozinho (relógio longe, side service reiniciado): continua
-      // agora. Pausado pela pessoa nas configurações fica pausado.
-      const st = states[t].status
-      const resume = !running && (st === STATUS.DOWNLOADING || (st === STATUS.PAUSED && !states[t].byUser)) && states[t].done < states[t].total
-      out[t] = { status: states[t].status, done: states[t].done, total, bytes: manifest && manifest.themes[t] ? manifest.themes[t].bytes : 0 }
-      if (resume && this.mapWaiting.indexOf(t) < 0) this.mapWaiting.push(t)
+      out[t] = { done: states[t].done, total }
     })
+    this.mapDirty = true
     this.mapSave(true)
-    if (!this.mapJob) this.mapPump()
     return { manifest: compactManifest(manifest), themes: out, delete: del }
-  },
-
-  // MAP_DOWNLOAD do relógio ("Baixar" no aviso): { theme, have }.
-  async mapOnDownload(params) {
-    const theme = params && params.theme
-    if (MAP_THEMES.indexOf(theme) < 0) throw new Error('Tema inválido')
-    const sync = await this.mapOnSync({ have: params.have })
-    this.mapStart(theme)
-    return sync
   }
 }
