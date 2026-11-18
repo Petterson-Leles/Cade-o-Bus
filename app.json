@@ -15,8 +15,7 @@
   "permissions": [
     "data:os.device.info",
     "device:os.local_storage",
-    "device:os.alarm",
-    "device:os.bg_service"
+    "device:os.alarm"
   ],
   "runtime": {
     "apiVersion": {
@@ -32,11 +31,6 @@
           "pages": [
             "page/home/index.page",
             "page/detail/index.page"
-          ]
-        },
-        "app-service": {
-          "services": [
-            "app-service/map-service"
           ]
         },
         "app-side": {

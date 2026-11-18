@@ -1,12 +1,10 @@
 // Arquivos do mapa de BH no relógio, só com @zos/fs (sem LocalStorage, sem UI):
-// usado pelo app (utils/map-store.js) e pelo App Service (app-service/map-service.js),
-// que tem menos APIs disponíveis. https://docs.zepp.com/docs/guides/framework/device/app-service/
+// usado por utils/map-store.js.
 // - mkdirSync, renameSync, statSync, rmSync, readFileSync, writeFileSync:
 //   https://docs.zepp.com/docs/reference/device-app-api/newAPI/fs/readFileSync/ (e páginas vizinhas)
 import { mkdirSync, renameSync, statSync, rmSync, readFileSync, writeFileSync } from '@zos/fs'
 import { WATCH_MAP_DIR, watchTilePath } from '../shared/map-tiles'
 import { parseTileParams } from '../shared/map-download'
-import { SERVICE_REGISTRY_FILE, PING_FILE, cleanRegistry } from '../shared/map-service'
 
 export function ensureMapDir() {
   try {
@@ -43,8 +41,8 @@ export function tileOfFile(file) {
 }
 
 // Move o arquivo recebido para data://map/<tema>-<k>-<x>_<y>.png. Idempotente: se o
-// mesmo bloco chegar a dois donos (app e service), o segundo acha o original já
-// movido e só confirma o destino (nunca apaga um bloco bom sem ter o novo em mãos).
+// mesmo aviso chegar duas vezes, a segunda acha o original já movido e só confirma o
+// destino (nunca apaga um bloco bom sem ter o novo em mãos).
 // Devolve { tile, ok } (ok: o bloco está no destino).
 export function moveReceivedTile(file) {
   const tile = tileOfFile(file)
@@ -78,45 +76,12 @@ export function moveReceivedTile(file) {
   return { tile, ok: fileExists(target) }
 }
 
-// ---- Registro do App Service (JSON próprio, para não disputar o LocalStorage do app) ----
-
-export function readServiceRegistry() {
+// Apaga um bloco guardado (cache LRU ou "Limpar mapa do relógio").
+export function removeTileFile(path) {
   try {
-    const txt = readFileSync({ path: SERVICE_REGISTRY_FILE, options: { encoding: 'utf8' } })
-    return cleanRegistry(typeof txt === 'string' ? txt : null)
-  } catch (e) {
-    return cleanRegistry(null)
-  }
-}
-
-// Devolve true se gravou (no service só funciona com a tela desligada / AOD).
-export function writeServiceRegistry(reg) {
-  try {
-    ensureMapDir()
-    writeFileSync({ path: SERVICE_REGISTRY_FILE, data: JSON.stringify(cleanRegistry(reg)), options: { encoding: 'utf8' } })
+    rmSync({ path })
     return true
   } catch (e) {
     return false
   }
-}
-
-export function removeServiceRegistry() {
-  try {
-    if (statSync({ path: SERVICE_REGISTRY_FILE })) rmSync({ path: SERVICE_REGISTRY_FILE })
-  } catch (e) {
-    // nada
-  }
-}
-
-// Arquivo pequeno que o service manda ao celular como "MAP_SYNC" (a página cria,
-// porque o service só grava com a tela desligada).
-export function ensurePingFile() {
-  if (fileExists(PING_FILE)) return true
-  try {
-    ensureMapDir()
-    writeFileSync({ path: PING_FILE, data: 'cob-sync', options: { encoding: 'utf8' } })
-  } catch (e) {
-    // sem arquivo, o service tenta de novo
-  }
-  return fileExists(PING_FILE)
 }

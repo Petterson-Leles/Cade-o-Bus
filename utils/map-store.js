@@ -1,32 +1,20 @@
-// Mapa de BH guardado no relógio: blocos em data://map/ e o registro do que já
-// chegou (LocalStorage). Usa APIs do relógio; a lógica pura fica em shared/.
+// Mapa de BH guardado no relógio (cache sob demanda): blocos em data://map/, o
+// registro do que já chegou (bits por tema) e a ordem de uso (LRU), no LocalStorage.
+// Usa APIs do relógio; a lógica pura fica em shared/ (map-tiles.js, map-demand.js).
 // - LocalStorage (@zos/storage), permissão device:os.local_storage:
 //   https://docs.zepp.com/docs/reference/device-app-api/newAPI/storage/localStorage/
 // - arquivos (@zos/fs), raiz /data e prefixo data:// (Zepp OS 3+):
 //   https://docs.zepp.com/docs/guides/framework/device/fs/
-//   mkdirSync, renameSync, statSync, rmSync, readFileSync, writeFileSync:
-//   https://docs.zepp.com/docs/reference/device-app-api/newAPI/fs/mkdirSync/ (e páginas vizinhas)
 // - arquivos recebidos do celular (TransferFile, inbox), API 3.0+:
 //   https://docs.zepp.com/docs/reference/device-app-api/newAPI/transfer-file/TransferFile/
 import { LocalStorage } from '@zos/storage'
-import { rmSync } from '@zos/fs'
-import {
-  MAP_THEMES,
-  parseCompactManifest,
-  compactTotal,
-  watchTilePath,
-  normalizeBits,
-  setBit,
-  hasBit,
-  countBits,
-  designLevels
-} from '../shared/map-tiles'
-import { unionTheme } from '../shared/map-service'
-import { moveReceivedTile, readServiceRegistry, writeServiceRegistry, removeServiceRegistry } from './map-files'
+import { MAP_THEMES, parseCompactManifest, compactTotal, watchTilePath, normalizeBits, setBit, hasBit, countBits, designLevels } from '../shared/map-tiles'
+import { manifestTag, cleanLru, lruTouch, lruEvict, WATCH_TILE_LIMIT } from '../shared/map-demand'
+import { moveReceivedTile, removeTileFile } from './map-files'
 
 const KEY_MANIFEST = 'map.manifest'
-const KEY_PROMPT = 'map.prompt'
 const themeKey = (t) => `map.${t}`
+const lruKey = (t) => `map.lru.${t}`
 
 let fallback = null
 
@@ -88,22 +76,31 @@ export function saveManifest(compact) {
   return m
 }
 
-// { have, total } de um tema só no LocalStorage do app.
-function readMainTheme(theme) {
+// { have, total } de um tema.
+function readTheme(theme) {
   const r = obj(get(themeKey(theme), null)) || {}
   const total = Number.isInteger(r.total) ? r.total : 0
   return { have: normalizeBits(r.have, total), total }
 }
 
-// { have, total } de um tema: o do app somado ao que o App Service guardou
-// (registro próprio dele, utils/map-files.js). Os dois só somam bits: o mesmo bloco
-// guardado pelos dois não conta duas vezes.
-function readTheme(theme) {
-  return unionTheme(readMainTheme(theme), readServiceRegistry().themes[theme])
-}
-
 function writeTheme(theme, rec) {
   set(themeKey(theme), JSON.stringify({ have: rec.have, total: rec.total }))
+}
+
+function readLru(theme, total) {
+  return cleanLru(get(lruKey(theme), null), total)
+}
+
+function writeLru(theme, list) {
+  set(lruKey(theme), JSON.stringify(list))
+}
+
+// Bits do tema valendo para o manifesto atual ('' se o total mudou).
+export function themeHave(theme) {
+  const compact = readManifest()
+  const total = compact ? compactTotal(compact, theme) : 0
+  const rec = readTheme(theme)
+  return total > 0 && rec.total === total ? rec.have : normalizeBits('', total)
 }
 
 // Mapa de bits de cada tema, para o MAP_SYNC: { dark: hex, light: hex }.
@@ -115,90 +112,85 @@ export function haveBits() {
   return out
 }
 
-// Mapa do tema pronto (todos os blocos chegaram) e o que a página precisa para desenhar.
-// scale: px físicos por px de design (px(1000) / 1000). Devolve null se não estiver pronto.
+// O que a página precisa para desenhar (com o manifesto no relógio, mesmo sem nenhum
+// bloco ainda: eles chegam sob demanda). scale: px físicos por px de design.
 export function tileInfo(theme, scale) {
   const compact = readManifest()
   if (!compact || !compact.levels[theme]) return null
   const total = compactTotal(compact, theme)
+  if (total === 0) return null
   const rec = readTheme(theme)
-  // Mapa parcial também serve: o celular manda primeiro a cidade no zoom afastado e
-  // os arredores dos seus pontos; blocos que ainda não chegaram ficam de fora.
-  if (total === 0 || rec.total !== total || countBits(rec.have, total) === 0) return null
-  return { theme, compact, levels: designLevels(compact, theme, scale), have: rec.have, complete: countBits(rec.have, total) >= total, at: Date.now() }
+  const have = rec.total === total ? rec.have : normalizeBits('', total)
+  return { theme, compact, tag: manifestTag(compact), levels: designLevels(compact, theme, scale), have, total, at: Date.now() }
 }
 
-// Progresso no relógio: { done, total }.
-export function themeProgress(theme) {
-  const compact = readManifest()
+// Blocos guardados de um tema.
+export function storedCount(theme) {
   const rec = readTheme(theme)
-  const total = compact ? compactTotal(compact, theme) : rec.total
-  return { done: countBits(rec.have, total || rec.total), total: total || rec.total }
+  return countBits(rec.have, rec.total)
 }
 
 // Arquivo recebido (FileObject do inbox, readyState 'transferred'): move para
-// data://map/<tema>-<k>-<x>_<y>.png e marca o bloco. Devolve true se guardou.
-// Idempotente (o App Service pode receber o mesmo bloco): ver moveReceivedTile.
+// data://map/<tema>-<k>-<x>_<y>.png, marca o bloco e o põe no fim do LRU; passou do
+// limite (WATCH_TILE_LIMIT), apaga os usados há mais tempo. Devolve true se guardou.
 export function storeReceivedTile(file) {
   const { tile: p, ok } = moveReceivedTile(file)
   if (!p || !ok) return false
-  const rec = readMainTheme(p.theme)
+  const rec = readTheme(p.theme)
   const total = p.total
-  const have = setBit(normalizeBits(rec.total === total ? rec.have : '', total), p.i)
+  const same = rec.total === total
+  let have = setBit(normalizeBits(same ? rec.have : '', total), p.i)
+  let lru = lruTouch(same ? readLru(p.theme, total) : [], [p.i])
+  const r = lruEvict({ lru, have, total, limit: WATCH_TILE_LIMIT, keep: [p.i] })
+  if (r.evict.length > 0) {
+    const compact = readManifest()
+    const levels = compact && compact.levels[p.theme]
+    r.evict.forEach((i) => {
+      const t = levels ? tileAt(levels, i) : null
+      if (t) removeTileFile(watchTilePath(p.theme, t.k, t.x, t.y))
+    })
+    have = r.have
+    lru = r.lru
+  }
   writeTheme(p.theme, { have, total })
+  writeLru(p.theme, lru)
   return true
 }
 
-// O que o App Service guardou vira registro do app. Com o service parado, apaga o
-// registro dele (com ele rodando, só copia: ele continua gravando no arquivo dele).
-export function absorbServiceTiles(serviceRunning) {
-  const reg = readServiceRegistry()
-  MAP_THEMES.forEach((t) => {
-    const extra = reg.themes[t]
-    if (!extra) return
-    const main = readMainTheme(t)
-    const u = unionTheme(main, extra)
-    if (u.total !== main.total || u.have !== main.have) writeTheme(t, u)
-  })
-  if (!serviceRunning) removeServiceRegistry()
+// Índice global -> { k, x, y } (versão curta do manifesto).
+function tileAt(levels, i) {
+  let n = i
+  for (let l = 0; l < levels.length; l++) {
+    const c = levels[l].c * levels[l].r
+    if (n < c) return { k: levels[l].k, x: n % levels[l].c, y: Math.floor(n / levels[l].c) }
+    n -= c
+  }
+  return null
 }
 
-// Apaga os blocos de um tema (o celular pediu "Apagar mapa").
+// Blocos que estão na tela: vão para o fim do LRU (não são apagados tão cedo).
+export function touchTiles(theme, indices) {
+  const rec = readTheme(theme)
+  if (!(rec.total > 0) || !Array.isArray(indices) || indices.length === 0) return
+  const list = readLru(theme, rec.total)
+  const next = lruTouch(list, indices.filter((i) => hasBit(rec.have, i)))
+  if (next.join(',') !== list.join(',')) writeLru(theme, next)
+}
+
+// Apaga os blocos de um tema ("Limpar mapa do relógio" no celular).
 export function deleteTheme(theme) {
   const compact = readManifest()
   const rec = readTheme(theme)
   const levels = compact && compact.levels[theme]
   if (levels) {
-    let i = 0
-    levels.forEach((l) => {
-      for (let y = 0; y < l.r; y++) {
-        for (let x = 0; x < l.c; x++, i++) {
-          if (!hasBit(rec.have, i)) continue
-          try {
-            rmSync({ path: watchTilePath(theme, l.k, x, y) })
-          } catch (e) {
-            // segue
-          }
-        }
-      }
-    })
+    for (let i = 0; i < rec.total; i++) {
+      if (!hasBit(rec.have, i)) continue
+      const t = tileAt(levels, i)
+      if (t) removeTileFile(watchTilePath(theme, t.k, t.x, t.y))
+    }
   }
   writeTheme(theme, { have: '', total: 0 })
-  // Também o que o App Service guardou deste tema.
-  const reg = readServiceRegistry()
-  if (reg.themes[theme]) {
-    delete reg.themes[theme]
-    writeServiceRegistry(reg)
-  }
-}
-
-// Escolha do aviso "Baixar o mapa de BH?": { choice: 'yes' | 'later', at }.
-export function readPrompt() {
-  return obj(get(KEY_PROMPT, null))
-}
-
-export function savePrompt(choice, now = Date.now()) {
-  set(KEY_PROMPT, JSON.stringify({ choice, at: now }))
+  writeLru(theme, [])
 }
 
 // O relógio recebe arquivos? (TransferFile existe a partir da API 3.0.)

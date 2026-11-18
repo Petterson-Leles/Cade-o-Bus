@@ -198,28 +198,22 @@ const fav = { id: 'a1', name: 'Casa', line: '1234', lat: '-19.9', lon: '-43.9' }
 
 test('settingsPayload manda favoritos e tema', () => {
   const s = memoryStorage({ [FAVORITES_KEY]: JSON.stringify([fav]), [THEME_KEY]: 'light' })
-  assert.deepEqual(settingsPayload(s), { favorites: [fav], theme: 'light', vibrate: true, bgMap: false })
-  assert.deepEqual(settingsPayload(memoryStorage()), { favorites: [], theme: 'dark', vibrate: true, bgMap: false })
+  assert.deepEqual(settingsPayload(s), { favorites: [fav], theme: 'light', vibrate: true })
+  assert.deepEqual(settingsPayload(memoryStorage()), { favorites: [], theme: 'dark', vibrate: true })
   assert.equal(settingsPayload(memoryStorage({ vibrate: '0' })).vibrate, false)
-  assert.equal(settingsPayload(memoryStorage({ mapBackground: '1' })).bgMap, true)
-  assert.equal(settingsPayload(memoryStorage({ mapBackground: '0' })).bgMap, false)
 })
 
 test('parseSettingsResult aceita o formato novo e o antigo', () => {
-  assert.deepEqual(parseSettingsResult({ favorites: [fav], theme: 'light' }, 'dark'), { favorites: [fav], theme: 'light', vibrate: true, bgMap: false })
+  assert.deepEqual(parseSettingsResult({ favorites: [fav], theme: 'light' }, 'dark'), { favorites: [fav], theme: 'light', vibrate: true })
   // Formato antigo (só a lista): mantém o tema atual.
-  assert.deepEqual(parseSettingsResult([fav], 'light'), { favorites: [fav], theme: 'light', vibrate: true, bgMap: false })
-  assert.deepEqual(parseSettingsResult({ favorites: [fav] }, 'light'), { favorites: [fav], theme: 'light', vibrate: true, bgMap: false })
-  assert.deepEqual(parseSettingsResult({ favorites: 'x', theme: 'roxo' }, 'light'), { favorites: [], theme: 'dark', vibrate: true, bgMap: false })
-  assert.deepEqual(parseSettingsResult(undefined, undefined), { favorites: [], theme: 'dark', vibrate: true, bgMap: false })
-  assert.deepEqual(parseSettingsResult(null, 'light'), { favorites: [], theme: 'light', vibrate: true, bgMap: false })
+  assert.deepEqual(parseSettingsResult([fav], 'light'), { favorites: [fav], theme: 'light', vibrate: true })
+  assert.deepEqual(parseSettingsResult({ favorites: [fav] }, 'light'), { favorites: [fav], theme: 'light', vibrate: true })
+  assert.deepEqual(parseSettingsResult({ favorites: 'x', theme: 'roxo' }, 'light'), { favorites: [], theme: 'dark', vibrate: true })
+  assert.deepEqual(parseSettingsResult(undefined, undefined), { favorites: [], theme: 'dark', vibrate: true })
+  assert.deepEqual(parseSettingsResult(null, 'light'), { favorites: [], theme: 'light', vibrate: true })
   // Interruptor de vibração: vem na resposta; sem ele, fica o atual.
   assert.equal(parseSettingsResult({ favorites: [], vibrate: false }, 'dark').vibrate, false)
   assert.equal(parseSettingsResult({ favorites: [] }, 'dark', false).vibrate, false)
-  // Download com a tela desligada: vem na resposta; sem ele, fica o atual (padrão desligado).
-  assert.equal(parseSettingsResult({ favorites: [], bgMap: true }, 'dark').bgMap, true)
-  assert.equal(parseSettingsResult({ favorites: [] }, 'dark', true, true).bgMap, true)
-  assert.equal(parseSettingsResult({ favorites: [], bgMap: 'sim' }, 'dark').bgMap, false)
 })
 
 test('parseDetailParams lê { fav, theme } e o favorito puro', () => {

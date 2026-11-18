@@ -1,50 +1,34 @@
-// Download do mapa de BH (celular -> relógio): estado guardado no settingsStorage,
-// fila sequencial e retomável, comandos da tela de configurações e o aviso do relógio.
+// Mapa de BH (celular -> relógio): o que o celular sabe do cache do relógio (guardado
+// no settingsStorage, para a tela de configurações), o comando "Limpar mapa do
+// relógio" e os parâmetros de cada bloco enviado.
 // Lógica pura (sem APIs do Zepp OS), testada em test/map-download.test.mjs.
-import { MAP_THEMES, normalizeBits, countBits, hasBit, setBit, mergeBits } from './map-tiles.js'
+// O envio sob demanda (quais blocos, prioridade, LRU) fica em shared/map-demand.js.
+import { MAP_THEMES, normalizeBits, countBits } from './map-tiles.js'
 
 // settingsStorage (celular): estado por tema, manifesto em cache e o último comando.
 export const MAP_STATE_KEY = 'mapDownload'
 export const MAP_MANIFEST_KEY = 'mapManifest'
 export const MAP_COMMAND_KEY = 'mapCommand'
-// Status de cada tema.
-export const STATUS = Object.freeze({
-  NONE: 'none', // não baixado
-  DOWNLOADING: 'downloading', // baixando n de N
-  PAUSED: 'paused', // parou no meio (relógio longe, app fechado...): continua depois
-  READY: 'ready', // pronto
-  ERROR: 'error',
-  DELETING: 'deleting' // apagar no relógio na próxima conexão
-})
-const STATUS_LIST = Object.keys(STATUS).map((k) => STATUS[k])
-// Tentativas por bloco antes de pausar a fila.
-export const MAX_TRIES = 3
-// Aviso "Baixar o mapa?" no relógio: depois de "Agora não", só volta depois disso.
-export const PROMPT_SNOOZE_MS = 3 * 24 * 3600 * 1000
+// Cache do celular (blocos já convertidos): shared/map-demand.js cleanPhoneCache.
+export const MAP_PHONE_CACHE_KEY = 'mapPhoneCache'
 
 const isTheme = (t) => MAP_THEMES.indexOf(t) >= 0
 
 export function emptyThemeState() {
-  // byUser: pausado pela pessoa (não volta sozinho quando o relógio aparece).
-  // step/stepAt: etapa do bloco atual (diagnóstico na tela de configurações).
-  return { status: STATUS.NONE, done: 0, total: 0, have: '', error: '', updatedAt: 0, stored: 0, byUser: false, step: '', stepAt: 0 }
+  // have/total: bits do que o relógio diz ter; deleting: apagar no relógio na próxima conexão.
+  return { done: 0, total: 0, have: '', deleting: false, updatedAt: 0 }
 }
 
 // Estado de um tema (sempre um objeto completo e coerente).
 export function cleanThemeState(raw) {
   const s = emptyThemeState()
   if (!raw || typeof raw !== 'object') return s
-  if (STATUS_LIST.indexOf(raw.status) >= 0) s.status = raw.status
   s.total = Number.isInteger(raw.total) && raw.total >= 0 && raw.total <= 10000 ? raw.total : 0
   s.have = normalizeBits(raw.have, s.total)
   s.done = countBits(s.have, s.total)
-  s.error = typeof raw.error === 'string' ? raw.error.slice(0, 120) : ''
+  // Formato antigo: status 'deleting'.
+  s.deleting = raw.deleting === true || raw.status === 'deleting'
   s.updatedAt = Number(raw.updatedAt) > 0 ? Number(raw.updatedAt) : 0
-  s.stored = Number(raw.stored) > 0 ? Math.round(Number(raw.stored)) : 0
-  s.byUser = raw.byUser === true && s.status === STATUS.PAUSED
-  s.step = typeof raw.step === 'string' ? raw.step.slice(0, 60) : ''
-  s.stepAt = Number(raw.stepAt) > 0 ? Number(raw.stepAt) : 0
-  if (s.status === STATUS.READY && (s.total === 0 || s.done < s.total)) s.status = s.done > 0 ? STATUS.PAUSED : STATUS.NONE
   return s
 }
 
@@ -71,115 +55,42 @@ export function writeMapStates(storage, states) {
   return out
 }
 
-// Junta o que o relógio diz ter (mapa de bits) ao estado do celular. O relógio é
-// quem manda: se ele perdeu blocos (app reinstalado), eles voltam para a fila.
-export function applyWatchBits(state, watchHex, total) {
+// O relógio é quem manda no que tem (ele apaga blocos velhos do cache LRU).
+export function applyWatchBits(state, watchHex, total, now = Date.now()) {
   const s = cleanThemeState(state)
   const n = Number.isInteger(total) && total > 0 ? total : s.total
   const have = normalizeBits(watchHex, n)
-  const done = countBits(have, n)
-  const next = { ...s, total: n, have, done }
-  if (s.status === STATUS.DELETING) return next
-  if (n > 0 && done >= n) return { ...next, status: STATUS.READY, error: '' }
-  if (s.status === STATUS.READY) return { ...next, status: done > 0 ? STATUS.PAUSED : STATUS.NONE }
-  return next
+  return { ...s, total: n, have, done: countBits(have, n), updatedAt: now }
 }
 
-// Só soma o que o relógio diz ter (nunca tira): usado com o "MAP_SYNC" do App
-// Service do relógio (shared/map-service.js), que pode não enxergar tudo o que o app
-// guardou. Completa -> pronto.
-export function mergeWatchBits(state, watchHex, total) {
-  const s = cleanThemeState(state)
-  const n = Number.isInteger(total) && total > 0 ? total : s.total
-  if (!(n > 0)) return s
-  const have = mergeBits(s.total === n ? s.have : '', watchHex, n)
-  const done = countBits(have, n)
-  const next = { ...s, total: n, have, done }
-  if (s.status !== STATUS.DELETING && done >= n) return { ...next, status: STATUS.READY, error: '' }
-  return next
+// Blocos guardados no relógio (somando os temas).
+export function storedCount(states) {
+  return MAP_THEMES.reduce((sum, t) => sum + (states && states[t] ? cleanThemeState(states[t]).done : 0), 0)
 }
 
-// Marca o bloco i como entregue.
-export function markDone(state, i, now = Date.now()) {
-  const have = setBit(normalizeBits(state.have, state.total), i)
-  const done = countBits(have, state.total)
-  const status = done >= state.total && state.total > 0 ? STATUS.READY : state.status
-  return { ...state, have, done, status, updatedAt: now, error: status === STATUS.READY ? '' : state.error }
+// Texto da tela de configurações.
+export function storedText(states) {
+  const s = MAP_THEMES.map((t) => cleanThemeState(states && states[t]))
+  if (s.some((x) => x.deleting)) return 'Limpando: abra o Cadê o Busão no relógio'
+  const n = storedCount(states)
+  return `Ruas aparecem conforme você usa · ${n} ${n === 1 ? 'bloco guardado' : 'blocos guardados'} no relógio`
 }
 
-// Próximos blocos que faltam (na ordem da lista).
-export function missingTiles(list, have) {
-  return (list || []).filter((t) => !hasBit(have, t.i))
-}
-
-// Texto do estado para a tela de configurações.
-// Sem notícia do celular há mais que isso durante o download = parado (o serviço
-// do celular só roda com o app aberto no relógio).
-export const STALE_MS = 60 * 1000
-
-export function isStale(state, now = Date.now()) {
-  const s = cleanThemeState(state)
-  const last = Math.max(s.updatedAt, s.stepAt)
-  return s.status === STATUS.DOWNLOADING && last > 0 && now - last > STALE_MS
-}
-
-export function statusText(state, now = Date.now()) {
-  const s = cleanThemeState(state)
-  switch (s.status) {
-    case STATUS.DOWNLOADING: {
-      const base = s.total > 0 ? `Baixando ${s.done} de ${s.total}` : 'Baixando…'
-      if (isStale(s, now)) return `${base} · parado: abra o Cadê o Busão no relógio para continuar`
-      return s.step ? `${base} · ${s.step}` : base
-    }
-    case STATUS.PAUSED:
-      return `Pausado em ${s.done} de ${s.total}${s.error ? ` · ${s.error}` : ''}`
-    case STATUS.READY:
-      return 'Pronto no relógio'
-    case STATUS.ERROR:
-      return `Erro${s.error ? `: ${s.error}` : ''}`
-    case STATUS.DELETING:
-      return 'Apagando (abra o app no relógio)'
-    default:
-      return 'Não baixado'
-  }
-}
-
-// O que o botão da tela de configurações faz no estado na hora, sem esperar o
-// serviço do celular (ele pode estar parado se o app do relógio estiver fechado).
-export function applyCommandLocally(states, action, theme, now = Date.now()) {
+// "Limpar" na tela de configurações: marca na hora (o serviço do celular pode estar parado).
+export function markDeleting(states, now = Date.now()) {
   const out = {}
   MAP_THEMES.forEach((t) => {
-    out[t] = cleanThemeState(states && states[t])
-  })
-  const themes = theme === 'all' ? MAP_THEMES : isTheme(theme) ? [theme] : []
-  themes.forEach((t) => {
-    const s = out[t]
-    if (action === 'pause' && s.status === STATUS.DOWNLOADING) out[t] = { ...s, status: STATUS.PAUSED, byUser: true, error: '', step: '', updatedAt: now }
-    else if (action === 'delete' && (s.status !== STATUS.NONE || s.done > 0)) out[t] = { ...s, status: STATUS.DELETING, error: '', step: '', updatedAt: now }
-    else if (action === 'download' && s.status !== STATUS.READY) out[t] = { ...s, status: STATUS.DOWNLOADING, byUser: false, error: '', step: 'esperando o app abrir no relógio', stepAt: now, updatedAt: now }
+    const s = cleanThemeState(states && states[t])
+    out[t] = s.done > 0 || s.total > 0 ? { ...s, deleting: true, updatedAt: now } : s
   })
   return out
 }
 
-// A pessoa parou este tema pela tela de configurações (pausar ou apagar)?
-export function stoppedByUser(state) {
-  const s = cleanThemeState(state)
-  return (s.status === STATUS.PAUSED && s.byUser) || s.status === STATUS.DELETING || s.status === STATUS.NONE
-}
-
-// "3,7 MB"
-export function formatBytes(bytes) {
-  const n = Number(bytes)
-  if (!(n > 0)) return ''
-  if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`
-  return `${(n / (1024 * 1024)).toFixed(1).replace('.', ',')} MB`
-}
-
 // ---- Comandos (tela de configurações -> side service, pelo settingsStorage) ----
 
-export const COMMANDS = ['download', 'pause', 'delete']
+export const COMMANDS = ['delete']
 
-// { action, theme, at } ou null. theme 'all' vale só para delete.
+// { action, theme, at } ou null.
 export function parseCommand(raw) {
   let c = raw
   if (typeof raw === 'string') {
@@ -190,7 +101,7 @@ export function parseCommand(raw) {
     }
   }
   if (!c || typeof c !== 'object' || COMMANDS.indexOf(c.action) < 0) return null
-  const theme = c.theme === 'all' && c.action !== 'download' ? 'all' : isTheme(c.theme) ? c.theme : null
+  const theme = c.theme === 'all' ? 'all' : isTheme(c.theme) ? c.theme : null
   if (!theme) return null
   const at = Number(c.at)
   return { action: c.action, theme, at: Number.isFinite(at) && at > 0 ? at : 0 }
@@ -200,48 +111,6 @@ export function makeCommand(action, theme, now = Date.now()) {
   return JSON.stringify({ action, theme, at: now })
 }
 
-// ---- Fila sequencial e retomável ----
-
-// Processa os blocos um de cada vez (nunca dois ao mesmo tempo no Bluetooth).
-// - tiles: blocos que faltam; process(tile) -> Promise (baixar, converter, enviar);
-// - onDone(tile): bloco entregue (salvar o progresso); onFail(tile, err, tries);
-// - shouldStop(): pedido para parar (pausar/apagar/trocar de tema);
-// - wait(ms) -> Promise: pausa entre blocos e antes de tentar de novo.
-// Um bloco que falha MAX_TRIES vezes seguidas para a fila (status 'paused'), para
-// não ficar martelando um relógio longe. Devolve Promise<{ status, done, error }>.
-// Como o progresso fica salvo em onDone, rodar de novo continua de onde parou.
-export function runQueue({ tiles, process, onDone, onFail, shouldStop, wait, maxTries = MAX_TRIES, gapMs = 150, retryMs = 2000 }) {
-  const list = Array.isArray(tiles) ? tiles.slice() : []
-  const sleep = typeof wait === 'function' ? wait : () => Promise.resolve()
-  const stop = typeof shouldStop === 'function' ? shouldStop : () => false
-  let done = 0
-  const step = (index, tries) => {
-    if (stop()) return Promise.resolve({ status: 'stopped', done, error: '' })
-    if (index >= list.length) return Promise.resolve({ status: 'finished', done, error: '' })
-    const tile = list[index]
-    let p
-    try {
-      p = Promise.resolve(process(tile))
-    } catch (e) {
-      p = Promise.reject(e)
-    }
-    return p.then(
-      () => {
-        done++
-        if (onDone) onDone(tile)
-        return sleep(gapMs).then(() => step(index + 1, 0))
-      },
-      (err) => {
-        const n = tries + 1
-        if (onFail) onFail(tile, err, n)
-        if (n >= maxTries) return { status: 'failed', done, error: err && err.message ? String(err.message) : String(err) }
-        return sleep(retryMs).then(() => step(index, n))
-      }
-    )
-  }
-  return step(0, 0)
-}
-
 // ---- Parâmetros de cada arquivo enviado ao relógio (TransferFile) ----
 
 // O que vai junto de cada bloco (strings, para passar pelo Bluetooth sem surpresa).
@@ -249,7 +118,7 @@ export function tileParams(theme, tile, total) {
   return { kind: 'cob-tile', theme, i: String(tile.i), k: String(Math.round(tile.k)), x: String(tile.x), y: String(tile.y), n: String(total), name: tile.name }
 }
 
-// No relógio: params recebidos -> { theme, i, k, x, y, total, name } ou null.
+// No relógio: params recebidos -> { theme, i, k, x, y, total } ou null.
 export function parseTileParams(p) {
   if (!p || typeof p !== 'object' || p.kind !== 'cob-tile' || !isTheme(p.theme)) return null
   const int = (v, max) => {
@@ -263,18 +132,4 @@ export function parseTileParams(p) {
   const total = int(p.n, 10000)
   if ([i, k, x, y, total].some((v) => v === null) || i >= total) return null
   return { theme: p.theme, i, k, x, y, total }
-}
-
-// ---- Aviso "Baixar o mapa de BH?" no relógio ----
-
-// prompt: { choice: 'later' | 'yes', at } guardado no relógio.
-// Mostra se o mapa do tema não está pronto, ninguém pediu para baixar e o
-// "Agora não" já passou de PROMPT_SNOOZE_MS.
-export function shouldPrompt({ ready, prompt, phoneStatus, now = Date.now() }) {
-  if (ready) return false
-  if (phoneStatus === STATUS.DOWNLOADING || phoneStatus === STATUS.PAUSED || phoneStatus === STATUS.READY) return false
-  if (!prompt || typeof prompt !== 'object') return true
-  if (prompt.choice === 'yes') return phoneStatus === STATUS.NONE && now - (Number(prompt.at) || 0) > PROMPT_SNOOZE_MS
-  if (prompt.choice === 'later') return now - (Number(prompt.at) || 0) > PROMPT_SNOOZE_MS
-  return true
 }
