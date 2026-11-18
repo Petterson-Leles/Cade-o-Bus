@@ -6,7 +6,7 @@
   "main": "app.js",
   "scripts": {
     "build:data": "node scripts/build-gtfs.mjs",
-    "build:masks": "node scripts/build-map-masks.mjs",
+    "build:fades": "node scripts/build-map-fades.mjs",
     "build": "zeus build",
     "dev": "zeus dev",
     "preview": "zeus preview",

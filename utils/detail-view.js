@@ -38,22 +38,29 @@ export function mapOffset(stop, bus, { pxPerKm = MAP_PX_PER_KM, maxR = MAP_MAX_R
   return { dx: Math.round(dx) || 0, dy: Math.round(dy) || 0, clamped }
 }
 
-// Tamanho da fonte do número grande para caber na coluna da esquerda (~190 px).
+// Tamanho da fonte do número grande para caber na coluna da esquerda (170 px).
 export function etaFontSize(min) {
   const digits = String(min).length
-  if (digits <= 1) return 190
-  if (digits === 2) return 150
-  return 100
+  if (digits <= 1) return 160
+  if (digits === 2) return 120
+  return 84
 }
 
 // Linha de baixo: "1,2 km · depois 11 e 19 min".
 export function infoLine(first, rest) {
-  if (!first) return ''
+  const p = infoParts(first, rest)
+  return p.dist ? `${p.dist} · ${p.next}` : ''
+}
+
+// A mesma informação em duas linhas (a coluna da esquerda é estreita):
+// { dist: '1,2 km', next: 'depois 11 e 19 min' }.
+export function infoParts(first, rest) {
+  if (!first) return { dist: '', next: '' }
   const dist = formatDistance(first.distanceM)
   const next = (rest || []).slice(0, 2).map((b) => b.etaMin)
-  if (next.length === 0) return `${dist} · ônibus ${first.vehicle}`
-  if (next.length === 1) return `${dist} · depois ${next[0]} min`
-  return `${dist} · depois ${next[0]} e ${next[1]} min`
+  if (next.length === 0) return { dist, next: `ônibus ${first.vehicle}` }
+  if (next.length === 1) return { dist, next: `depois ${next[0]} min` }
+  return { dist, next: `depois ${next[0]} e ${next[1]} min` }
 }
 
 // Resposta de GET_BUSES -> { buses, map }. Aceita o formato antigo (só a lista).

@@ -14,7 +14,7 @@ import { THEME_KEY } from '../utils/colors'
 import { lineCodesFor } from '../shared/line-codes'
 import { lineVariants } from '../shared/gtfs'
 import { variantsThroughStop, busOnVariants, buildMapPayload, pointAt, makeProjection, speedPxPerSec } from '../shared/route-map'
-import { chooseFrame, stableFrame, MAP_VIEW_R, MAP_BUS_MAX_R } from '../shared/map-frame'
+import { chooseFrame, stableFrame, MAP_VIEW, MAP_CLIP } from '../shared/map-frame'
 import { trackPassing, latestPassed } from '../shared/passing'
 import { summarizeEtas, withStreets, createFeedCache } from '../shared/summary'
 import { mapSync } from './map-sync'
@@ -160,8 +160,8 @@ AppSideService(
       if (passed && Number.isInteger(passed.variant) && variants[passed.variant] !== drawn) {
         passed = { ...passed, along: NaN, posM: posOnVariant(variants, passed) }
       }
-      // Enquadramento: automático (ônibus e ponto juntos), zoom manual do relógio
-      // ou, com o mapa de ruas no relógio, só os níveis fixos dos blocos.
+      // Enquadramento automático (ônibus e ponto juntos no retângulo do mapa) ou,
+      // com o mapa de ruas no relógio, só os níveis fixos dos blocos (com histerese).
       const first = withRoute[0]
       let busXY = null
       if (first) {
@@ -169,8 +169,11 @@ AppSideService(
         if (!busXY) busXY = first.posM || (ctx ? ctx.project : makeProjection(params))(first.lat, first.lon)
       }
       const key = routeKey(params)
-      const ideal = chooseFrame({ busXY, zoom: params.zoom, levels: params.levels, level: params.level })
-      const frame = stableFrame(frameMemory.get(key), ideal, busXY)
+      // Zoom só automático: o nível anterior entra na histerese (pickLevel).
+      const prev = frameMemory.get(key) || null
+      const prevLevel = prev && prev.auto && Number.isInteger(prev.level) ? prev.level : null
+      const ideal = chooseFrame({ busXY, zoom: params.zoom, levels: params.levels, level: params.level, prevLevel })
+      const frame = stableFrame(prev, ideal, busXY)
       if (frameMemory.size >= ROUTE_CACHE_MAX && !frameMemory.has(key)) frameMemory.delete(frameMemory.keys().next().value)
       frameMemory.set(key, frame)
       const pxPerM = frame.k / 1000
@@ -180,10 +183,13 @@ AppSideService(
         stop: { id: params.stopId, lat: params.lat, lon: params.lon },
         buses: withRoute,
         lineStops: drawn ? drawn.stops : [],
-        radiusM: MAP_VIEW_R / pxPerM,
+        // Metade direita da tela: trajeto recortado ao retângulo do canvas e ícones
+        // presos à área visível (shared/map-frame.js MAP_CLIP / MAP_VIEW).
+        radiusM: Math.hypot(MAP_CLIP.x1, MAP_CLIP.y1) / pxPerM,
+        clip: MAP_CLIP,
+        busBox: MAP_VIEW,
         pxPerKm: frame.k,
         center: frame.center,
-        busMaxR: MAP_BUS_MAX_R,
         passed
       })
       map.auto = frame.auto

@@ -133,9 +133,10 @@ export function storedCount(theme) {
 // Arquivo recebido (FileObject do inbox, readyState 'transferred'): move para
 // data://map/<tema>-<k>-<x>_<y>.png, marca o bloco e o põe no fim do LRU; passou do
 // limite (WATCH_TILE_LIMIT), apaga os usados há mais tempo. Devolve true se guardou.
+// (Devolve { ok, reason } a partir desta versão; reason: texto curto para o diagnóstico.)
 export function storeReceivedTile(file) {
-  const { tile: p, ok } = moveReceivedTile(file)
-  if (!p || !ok) return false
+  const { tile: p, ok, reason } = moveReceivedTile(file)
+  if (!p || !ok) return { ok: false, reason: reason || 'não guardou' }
   const rec = readTheme(p.theme)
   const total = p.total
   const same = rec.total === total
@@ -154,7 +155,7 @@ export function storeReceivedTile(file) {
   }
   writeTheme(p.theme, { have, total })
   writeLru(p.theme, lru)
-  return true
+  return { ok: true, reason: '' }
 }
 
 // Índice global -> { k, x, y } (versão curta do manifesto).
@@ -202,4 +203,16 @@ export function canReceiveFiles() {
   } catch (e) {
     return false
   }
+}
+
+// Contadores do inbox (app.js): { rx, ok, bad, err } desde que o app abriu.
+export function watchDiag() {
+  try {
+    const app = typeof getApp === 'function' ? getApp() : null
+    const d = app && app._options && app._options.globalData && app._options.globalData.mapDiag
+    if (d) return { rx: d.rx || 0, ok: d.ok || 0, bad: d.bad || 0, err: d.err || '' }
+  } catch (e) {
+    // sem app
+  }
+  return { rx: 0, ok: 0, bad: 0, err: '' }
 }

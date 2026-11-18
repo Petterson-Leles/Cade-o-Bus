@@ -133,3 +133,99 @@ export function parseTileParams(p) {
   if ([i, k, x, y, total].some((v) => v === null) || i >= total) return null
   return { theme: p.theme, i, k, x, y, total }
 }
+
+// ---- Diagnóstico do envio (celular, mostrado nas configurações) ----
+
+// settingsStorage: contadores desde que o side service abriu e o último erro.
+export const MAP_DIAG_KEY = 'mapDiag'
+
+export function emptyDiag() {
+  // req: blocos da vista pedidos pelo relógio; sent: entregues pela outbox;
+  // conf: enviados que o relógio confirmou ter (bits do pedido seguinte); fail: envios com erro.
+  return { req: 0, sent: 0, conf: 0, fail: 0, err: '', errAt: 0, manifest: '', manifestAt: 0, watch: null, at: 0 }
+}
+
+const cleanText = (t, max) => (typeof t === 'string' ? t.replace(/\s+/g, ' ').trim().slice(0, max) : '')
+
+export function cleanDiag(raw) {
+  let d = raw
+  if (typeof raw === 'string') {
+    try {
+      d = JSON.parse(raw)
+    } catch (e) {
+      d = null
+    }
+  }
+  const out = emptyDiag()
+  if (!d || typeof d !== 'object') return out
+  const int = (v) => (Number.isInteger(v) && v >= 0 && v < 1e7 ? v : 0)
+  out.req = int(d.req)
+  out.sent = int(d.sent)
+  out.conf = int(d.conf)
+  out.fail = int(d.fail)
+  out.err = cleanText(d.err, 80)
+  out.errAt = Number(d.errAt) > 0 ? Number(d.errAt) : 0
+  out.manifest = cleanText(d.manifest, 60)
+  out.manifestAt = Number(d.manifestAt) > 0 ? Number(d.manifestAt) : 0
+  out.at = Number(d.at) > 0 ? Number(d.at) : 0
+  const w = d.watch
+  if (w && typeof w === 'object') out.watch = { rx: int(w.rx), ok: int(w.ok), bad: int(w.bad), err: cleanText(w.err, 60) }
+  return out
+}
+
+// Soma n num contador (req, sent, conf, fail).
+export function diagCount(diag, field, n = 1, now = Date.now()) {
+  const d = cleanDiag(diag)
+  if (['req', 'sent', 'conf', 'fail'].indexOf(field) < 0 || !(n > 0)) return d
+  d[field] += Math.round(n)
+  d.at = now
+  return d
+}
+
+// Último erro do envio de bloco (texto curto, com a hora).
+export function diagError(diag, text, now = Date.now()) {
+  const d = cleanDiag(diag)
+  d.err = cleanText(String(text || 'erro'), 80)
+  d.errAt = now
+  d.at = now
+  return d
+}
+
+// Estado do manifesto no celular ('ok v1 2026-11-17' ou o erro).
+export function diagManifest(diag, text, now = Date.now()) {
+  const d = cleanDiag(diag)
+  d.manifest = cleanText(String(text || ''), 60)
+  d.manifestAt = now
+  d.at = now
+  return d
+}
+
+// O que o relógio conta do inbox (vem no pedido de blocos).
+export function diagWatch(diag, watch, now = Date.now()) {
+  const d = cleanDiag(diag)
+  if (!watch || typeof watch !== 'object') return d
+  d.watch = cleanDiag({ watch }).watch
+  d.at = now
+  return d
+}
+
+// HH:MM:SS no fuso do aparelho.
+export function clockText(ms) {
+  if (!(ms > 0)) return ''
+  const t = new Date(ms)
+  const two = (n) => String(n).padStart(2, '0')
+  return `${two(t.getHours())}:${two(t.getMinutes())}:${two(t.getSeconds())}`
+}
+
+// Linhas da seção do mapa nas configurações.
+export function diagLines(diag) {
+  const d = cleanDiag(diag)
+  const lines = [`Blocos: ${d.req} pedidos · ${d.sent} enviados · ${d.conf} confirmados pelo relógio${d.fail ? ` · ${d.fail} com erro` : ''}`]
+  if (d.watch) {
+    const w = d.watch
+    lines.push(`Relógio: ${w.rx} recebidos · ${w.ok} guardados${w.bad ? ` · ${w.bad} ignorados` : ''}${w.err ? ` · ${w.err}` : ''}`)
+  }
+  if (d.manifest) lines.push(`Manifesto: ${d.manifest}${d.manifestAt ? ` (${clockText(d.manifestAt)})` : ''}`)
+  if (d.err) lines.push(`Último erro: ${d.err}${d.errAt ? ` às ${clockText(d.errAt)}` : ''}`)
+  return lines
+}

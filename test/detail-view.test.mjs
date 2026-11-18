@@ -36,9 +36,9 @@ test('mapOffset: sem coordenada devolve null', () => {
 })
 
 test('etaFontSize diminui com o número de dígitos', () => {
-  assert.equal(etaFontSize(5), 190)
-  assert.equal(etaFontSize(12), 150)
-  assert.equal(etaFontSize(120), 100)
+  assert.equal(etaFontSize(5), 160)
+  assert.equal(etaFontSize(12), 120)
+  assert.equal(etaFontSize(120), 84)
 })
 
 test('infoLine', () => {

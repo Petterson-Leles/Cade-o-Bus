@@ -216,6 +216,57 @@ export function clipToCircle(pts, r) {
   return pieces.filter((piece) => piece.length >= 2)
 }
 
+// Recorta uma polyline ao retângulo { x0, x1, y0, y1 } (Liang–Barsky por segmento).
+// Devolve uma lista de pedaços (a rota pode sair e voltar ao retângulo).
+export function clipToRect(pts, rect) {
+  const pieces = []
+  let cur = null
+  const inR = (p) => p[0] >= rect.x0 && p[0] <= rect.x1 && p[1] >= rect.y0 && p[1] <= rect.y1
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1]
+    const b = pts[i]
+    const dx = b[0] - a[0]
+    const dy = b[1] - a[1]
+    let t0 = 0
+    let t1 = 1
+    let ok = true
+    ;[
+      [-dx, a[0] - rect.x0],
+      [dx, rect.x1 - a[0]],
+      [-dy, a[1] - rect.y0],
+      [dy, rect.y1 - a[1]]
+    ].forEach(([pp, q]) => {
+      if (!ok) return
+      if (pp === 0) {
+        if (q < 0) ok = false
+        return
+      }
+      const t = q / pp
+      if (pp < 0) {
+        if (t > t1) ok = false
+        else if (t > t0) t0 = t
+      } else if (t < t0) ok = false
+      else if (t < t1) t1 = t
+    })
+    if (!ok) {
+      if (cur) pieces.push(cur)
+      cur = null
+      continue
+    }
+    const p0 = [a[0] + t0 * dx, a[1] + t0 * dy]
+    const p1 = [a[0] + t1 * dx, a[1] + t1 * dy]
+    if (!cur) cur = [p0]
+    cur.push(p1)
+    // Saiu do retângulo no meio do segmento: fecha o pedaço.
+    if (t1 < 1 || !inR(b)) {
+      pieces.push(cur)
+      cur = null
+    }
+  }
+  if (cur) pieces.push(cur)
+  return pieces.filter((piece) => piece.length >= 2)
+}
+
 // Pedaços em metros -> arrays planos de inteiros em pixels [x0, y0, x1, y1, ...],
 // simplificados (1 px) e sem pontos repetidos.
 export function toPixelPieces(pieces, pxPerM) {
@@ -273,6 +324,8 @@ export function buildMapPayload({
   pxPerKm = MAP_PX_PER_KM,
   center = null,
   busMaxR,
+  clip = null,
+  busBox = null,
   maxStops = MAX_MAP_STOPS,
   trailM = TRAIL_M,
   passed = null
@@ -286,10 +339,14 @@ export function buildMapPayload({
   if (!project) return payload
   // Metros (projeção do ponto) -> metros relativos ao centro do mapa.
   const shift = (pts) => pts.map((p) => [p[0] - cx, p[1] - cy])
-  const clip = (pts) => toPixelPieces(clipToCircle(shift(pts), radiusM), pxPerM)
+  // clip (px, relativo ao centro do mapa): retângulo desenhado; sem ele, o círculo radiusM.
+  const rectM = clip ? { x0: clip.x0 / pxPerM, x1: clip.x1 / pxPerM, y0: clip.y0 / pxPerM, y1: clip.y1 / pxPerM } : null
+  const cut = (pts) => (rectM ? clipToRect(pts, rectM) : clipToCircle(pts, radiusM))
+  const inView = (x, y) => (rectM ? x >= rectM.x0 && x <= rectM.x1 && y >= rectM.y0 && y <= rectM.y1 : Math.hypot(x, y) <= radiusM)
+  const clipPx = (pts) => toPixelPieces(cut(shift(pts)), pxPerM)
   const onRoute = (b) => ctx && ctx.pts.length >= 2 && b && b.route && !b.route.passed && Number.isFinite(b.route.along)
   if (ctx && ctx.pts.length >= 2) {
-    payload.route = clip(ctx.pts)
+    payload.route = clipPx(ctx.pts)
     const first = buses[0] && buses[0].route
     if (onRoute(buses[0]) && ctx.stopAlong !== null) {
       let parts
@@ -300,11 +357,11 @@ export function buildMapPayload({
         parts = [subPolyline(ctx.pts, ctx.cum, first.along, ctx.total), subPolyline(ctx.pts, ctx.cum, 0, ctx.stopAlong)]
       }
       parts.forEach((part) => {
-        payload.hi.push(...clip(part))
+        payload.hi.push(...clipPx(part))
       })
       // Rastro: trajeto já percorrido, parado no mapa (não segue o ícone).
       const back = subPolyline(ctx.pts, ctx.cum, Math.max(0, first.along - trailM), first.along)
-      const pieces = clipToCircle(shift(back), radiusM).map((piece) => piece.map((p) => [p[0] * pxPerM, p[1] * pxPerM]))
+      const pieces = cut(shift(back)).map((piece) => piece.map((p) => [p[0] * pxPerM, p[1] * pxPerM]))
       payload.trail = dotsAlong(
         pieces.map((piece) => piece.reduce((flat, p) => flat.concat(p), [])),
         TRAIL_SPACING_PX,
@@ -317,21 +374,24 @@ export function buildMapPayload({
     const s = lineStops[i]
     if (stopId !== null && String(s.id) === stopId) continue
     const [mx, my] = project(s.lat, s.lon)
-    if (!(Math.hypot(mx - cx, my - cy) <= radiusM)) continue
+    if (!inView(mx - cx, my - cy)) continue
     if (Math.hypot(mx, my) * pxPerM < 1) continue // em cima do ponto do usuário
     payload.stops.push(Math.round((mx - cx) * pxPerM) || 0, Math.round((my - cy) * pxPerM) || 0)
   }
   const maxR = busMaxR === undefined ? r : busMaxR
-  // Posição em pixels (presa ao raio maxR) de um ponto em metros.
+  // Dentro da área dos ícones? busBox { hx, hy } (retângulo, px) ou o raio maxR.
+  const inBox = (x, y) => (busBox ? Math.abs(x) <= busBox.hx && Math.abs(y) <= busBox.hy : Math.hypot(x, y) <= maxR)
+  // Posição em pixels (presa à área dos ícones) de um ponto em metros.
   const place = (m) => {
     if (!m || !Number.isFinite(m[0]) || !Number.isFinite(m[1])) return null
     let x = (m[0] - cx) * pxPerM
     let y = (m[1] - cy) * pxPerM
-    const d = Math.hypot(x, y)
-    const clamped = d > maxR
+    const clamped = !inBox(x, y)
     if (clamped) {
-      x = (x / d) * maxR
-      y = (y / d) * maxR
+      // Puxa em linha reta (na direção do centro) até a borda da área.
+      const f = busBox ? Math.min(Math.abs(x) > 0 ? busBox.hx / Math.abs(x) : Infinity, Math.abs(y) > 0 ? busBox.hy / Math.abs(y) : Infinity) : maxR / Math.hypot(x, y)
+      x *= f
+      y *= f
     }
     return { x: Math.round(x) || 0, y: Math.round(y) || 0, clamped }
   }
@@ -357,7 +417,7 @@ export function buildMapPayload({
     }
     const inR = (a) => {
       const p = at(a)
-      return Math.hypot(p[0], p[1]) <= maxR
+      return inBox(p[0], p[1])
     }
     for (let a = along, n = 0; a <= end && n < 4000; a += step, n++) {
       if (!inR(a)) continue
@@ -384,7 +444,7 @@ export function buildMapPayload({
 
 // Valida o mapa recebido no relógio: devolve um mapa seguro (números inteiros
 // dentro de ±limit) ou null.
-export function sanitizeMapPayload(map, limit = 200) {
+export function sanitizeMapPayload(map, limit = 300) {
   if (!map || typeof map !== 'object') return null
   const okNum = (n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= limit
   const flat = (a) => (Array.isArray(a) && a.length % 2 === 0 && a.every(okNum) ? a.map(Math.round) : null)

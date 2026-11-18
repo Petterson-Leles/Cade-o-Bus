@@ -35,10 +35,33 @@ export function manifestTag(compact) {
 
 // ---- Parâmetros do relógio (junto do GET_BUSES) ----
 
-// { theme, have (hex do tema), r (raio do mapa em px físicos), scale (px físicos por
-// px de design), mv (etiqueta do manifesto que o relógio tem) }.
-export function buildDemandParams({ theme, have, r, scale, mv }) {
-  return { theme, have: typeof have === 'string' ? have : '', r: Math.round(Number(r) || 0), scale: Math.round((Number(scale) || 1) * 10000) / 10000, mv: mv || '' }
+// { theme, have (hex do tema), r (raio do mapa em px físicos; formato antigo),
+// view (retângulo do mapa em px físicos relativo ao centro do mapa e o círculo da
+// tela: [l, t, w, h, sx, sy, sr]), scale (px físicos por px de design), mv (etiqueta
+// do manifesto que o relógio tem), diag (o que o relógio recebeu: { rx, ok, bad, err }) }.
+export function buildDemandParams({ theme, have, r, view, scale, mv, diag }) {
+  const out = { theme, have: typeof have === 'string' ? have : '', r: Math.round(Number(r) || 0), scale: Math.round((Number(scale) || 1) * 10000) / 10000, mv: mv || '' }
+  const v = cleanViewRect(view)
+  if (v) out.view = v
+  const d = cleanWatchDiag(diag)
+  if (d) out.diag = d
+  return out
+}
+
+// [l, t, w, h, sx, sy, sr] (inteiros, px físicos) ou null.
+export function cleanViewRect(v) {
+  if (!Array.isArray(v) || v.length !== 7) return null
+  const n = v.map((x) => Math.round(Number(x)))
+  if (!n.every((x) => Number.isFinite(x) && Math.abs(x) <= 2000)) return null
+  if (!(n[2] >= 20 && n[3] >= 20) || n[6] < 0) return null
+  return n
+}
+
+// Contadores do relógio (arquivos recebidos): { rx, ok, bad, err } ou null.
+export function cleanWatchDiag(d) {
+  if (!d || typeof d !== 'object') return null
+  const int = (x) => (Number.isInteger(Number(x)) && Number(x) >= 0 && Number(x) < 1e6 ? Number(x) : 0)
+  return { rx: int(d.rx), ok: int(d.ok), bad: int(d.bad), err: typeof d.err === 'string' ? d.err.slice(0, 60) : '' }
 }
 
 export function parseDemandParams(p) {
@@ -46,21 +69,32 @@ export function parseDemandParams(p) {
   const r = Number(p.r)
   const scale = Number(p.scale)
   const have = typeof p.have === 'string' && /^[0-9a-f]*$/i.test(p.have) && p.have.length <= 2500 ? p.have.toLowerCase() : ''
-  return {
+  const out = {
     theme: p.theme,
     have,
     r: r >= 20 && r <= 1000 ? r : 0,
     scale: scale > 0.2 && scale <= 5 ? scale : 1,
     mv: typeof p.mv === 'string' ? p.mv.slice(0, 40) : ''
   }
+  const view = cleanViewRect(p.view)
+  if (view) out.view = view
+  const diag = cleanWatchDiag(p.diag)
+  if (diag) out.diag = diag
+  return out
 }
 
 // ---- Blocos da vista ----
 
-// Blocos que cobrem o círculo de raio r (px físicos) em volta de center ({ lat, lon })
-// no nível `level`: [{ i, level, x, y }].
-export function viewTiles({ compact, theme, level, center, r }) {
-  return tilesForView({ compact, theme, level, center, cx: 0, cy: 0, r }).map((t) => ({ i: t.i, level, x: t.tx, y: t.ty }))
+// Blocos que cobrem a vista em volta de center ({ lat, lon }) no nível `level`:
+// view [l, t, w, h, sx, sy, sr] (retângulo e círculo da tela, px físicos relativos ao
+// centro do mapa; `grow` px de folga em cada lado) ou o círculo de raio r.
+// [{ i, level, x, y }].
+export function viewTiles({ compact, theme, level, center, r = 0, view = null, grow = 0 }) {
+  const v = cleanViewRect(view)
+  const opts = v
+    ? { rect: { x: v[0] - grow, y: v[1] - grow, w: v[2] + 2 * grow, h: v[3] + 2 * grow }, circle: v[6] > 0 ? { x: v[4], y: v[5], r: v[6] + grow } : null }
+    : { r: r + grow }
+  return tilesForView({ compact, theme, level, center, cx: 0, cy: 0, ...opts }).map((t) => ({ i: t.i, level, x: t.tx, y: t.ty }))
 }
 
 // Contagem de blocos de uma lista (da vista) que o relógio ainda não tem.
@@ -81,34 +115,39 @@ export function needsTile(i, have, sentAt, now = Date.now(), ttl = SENT_TTL_MS) 
 // - r: raio do mapa em px físicos (o celular usa uma folga de 2 px: nunca falta um
 //   bloco que o relógio desenha por diferença de arredondamento);
 // - have: bits do relógio; sentAt: { i: quando foi enviado }.
-export function demandPlan({ compact, theme, level, center, r, have = '', sentAt = null, now = Date.now(), prefetch = true, maxPrefetch = MAX_PREFETCH }) {
+export function demandPlan({ compact, theme, level, center, r = 0, view = null, have = '', sentAt = null, now = Date.now(), prefetch = true, maxPrefetch = MAX_PREFETCH }) {
   const levels = compact && compact.levels && compact.levels[theme]
-  if (!levels || !levels[level] || !center || !(r > 0)) return []
+  const v = cleanViewRect(view)
+  if (!levels || !levels[level] || !center || (!v && !(r > 0))) return []
   const need = (i) => needsTile(i, have, sentAt, now)
   const seen = new Set()
   const out = []
-  viewTiles({ compact, theme, level, center, r: r + 2 }).forEach((t) => {
+  const area = { r, view: v }
+  viewTiles({ compact, theme, level, center, ...area, grow: 2 }).forEach((t) => {
     seen.add(t.i)
     if (need(t.i)) out.push({ ...t, prio: PRIO.VIEW })
   })
   if (!prefetch || maxPrefetch <= 0) return out
   const extra = []
-  // Vizinhos no mesmo nível: anel de ~3/4 de bloco em volta da vista.
+  // Vizinhos no mesmo nível: faixa de ~3/4 de bloco em volta da vista.
   const ts = compact.ts
   const L = levels[level]
   const [gx, gy] = globalPixel(compact, L.k, center.lat, center.lon)
-  viewTiles({ compact, theme, level, center, r: r + 2 + Math.round(ts * 0.75) })
+  // Centro da vista (o retângulo pode não estar centrado no centro do mapa).
+  const ox = v ? v[0] + v[2] / 2 : 0
+  const oy = v ? v[1] + v[3] / 2 : 0
+  viewTiles({ compact, theme, level, center, ...area, grow: 2 + Math.round(ts * 0.75) })
     .filter((t) => !seen.has(t.i))
-    .map((t) => ({ t, d: Math.hypot((t.x + 0.5) * ts - gx, (t.y + 0.5) * ts - gy) }))
+    .map((t) => ({ t, d: Math.hypot((t.x + 0.5) * ts - gx - ox, (t.y + 0.5) * ts - gy - oy) }))
     .sort((a, b) => a.d - b.d || a.t.i - b.t.i)
     .forEach(({ t }) => {
       seen.add(t.i)
       if (need(t.i)) extra.push({ ...t, prio: PRIO.NEAR })
     })
-  // Mesma vista nos níveis vizinhos (a coroa costuma ir um passo para cada lado).
+  // Mesma vista nos níveis vizinhos (o zoom automático vai um passo para cada lado).
   ;[level + 1, level - 1].forEach((l) => {
     if (!levels[l]) return
-    viewTiles({ compact, theme, level: l, center, r: r + 2 }).forEach((t) => {
+    viewTiles({ compact, theme, level: l, center, ...area, grow: 2 }).forEach((t) => {
       if (seen.has(t.i)) return
       seen.add(t.i)
       if (need(t.i)) extra.push({ ...t, prio: PRIO.LEVEL })
@@ -116,6 +155,31 @@ export function demandPlan({ compact, theme, level, center, r, have = '', sentAt
   })
   extra.sort((a, b) => a.prio - b.prio)
   return out.concat(extra.slice(0, maxPrefetch))
+}
+
+// ---- Diagnóstico no relógio (texto pequeno no canto do mapa) ----
+
+// Por que a vista não tem nenhum bloco desenhado? '' quando há bloco na tela.
+// - files: o relógio recebe arquivos (TransferFile);
+// - manifest: o relógio tem o manifesto do mapa; level: nível do enquadramento (ou null);
+// - shown/pending: blocos da vista desenhados / que faltam;
+// - watch: { rx, ok, bad, err } do inbox; phone: { sent, fail, err } da resposta.
+export function mapDiagText({ files = true, manifest = false, level = null, shown = 0, pending = 0, watch = null, phone = null } = {}) {
+  if (shown > 0) return ''
+  let head
+  if (!files) head = 'mapa: relógio não recebe arquivos'
+  else if (!manifest) head = 'mapa: sem manifesto'
+  else if (level === null || level === undefined) head = 'mapa: celular sem nível'
+  else if (pending > 0) head = `mapa: aguardando blocos (${pending})`
+  else head = 'mapa: sem blocos aqui'
+  const parts = []
+  const w = watch || {}
+  if (w.rx || w.ok || w.bad) parts.push(`rel ${w.ok || 0}/${w.rx || 0}${w.bad ? ` ✗${w.bad}` : ''}`)
+  const p = phone || {}
+  if (p.sent || p.fail) parts.push(`cel ${p.sent || 0}${p.fail ? ` ✗${p.fail}` : ''}`)
+  const err = w.err || p.err || ''
+  if (err) parts.push(err.slice(0, 28))
+  return parts.length ? `${head}\n${parts.join(' · ')}` : head
 }
 
 // ---- Fila com prioridade (celular) ----
@@ -266,4 +330,14 @@ export function tilesNearPoints(tiles, manifest, points, km = 1, max = 60) {
     .sort((a, b) => a.d - b.d || a.t.level - b.t.level || a.t.i - b.t.i)
     .slice(0, max)
     .map((o) => o.t)
+}
+
+// ---- Confirmação (celular): enviados que o relógio já diz ter ----
+
+// awaiting: índices enviados ainda não confirmados; have: bits do relógio.
+// Devolve { confirmed (quantos agora), rest (os que seguem esperando) }.
+export function confirmTiles(awaiting, have) {
+  const list = Array.isArray(awaiting) ? awaiting : []
+  const rest = list.filter((i) => !hasBit(have, i))
+  return { confirmed: list.length - rest.length, rest }
 }

@@ -248,40 +248,49 @@ export function globalPixel(compact, k, lat, lon) {
   return [((lon - compact.oo) * kx * k) / 1000, ((compact.oa - lat) * compact.m * k) / 1000]
 }
 
-// Blocos que cobrem o círculo do mapa e onde desenhar cada um, em px físicos da tela.
+// Blocos que cobrem o mapa e onde desenhar cada um, em px físicos da tela.
 // - compact/theme/level: versão curta do manifesto, tema e índice do nível;
-// - center: { lat, lon } do centro do mapa; cx, cy: centro do mapa na tela; r: raio;
-// - box (opcional): retângulo { x, y, w, h } que recorta os blocos (quadrado do mapa).
+// - center: { lat, lon } do centro do mapa; cx, cy: onde esse centro fica na tela;
+// - área coberta: rect { x, y, w, h } (retângulo do mapa na tela) ou, sem ele, o
+//   círculo de raio r em volta de (cx, cy);
+// - circle (opcional, com rect): { x, y, r } da tela redonda; blocos fora dela saem;
+// - box (opcional): retângulo que recorta os blocos (padrão: rect, ou o quadrado do círculo).
 // Cada item: { tx, ty, i, x, y, w, h, pos_x, pos_y }: o IMG fica em (x, y, w, h)
 // (já recortado) e a imagem é deslocada por (pos_x, pos_y) dentro dele.
-export function tilesForView({ compact, theme, level, center, cx, cy, r, box = null }) {
+export function tilesForView({ compact, theme, level, center, cx, cy, r = 0, rect = null, circle = null, box = null }) {
   const levels = compact && compact.levels && compact.levels[theme]
-  if (!levels || !levels[level] || !center || !(r > 0)) return []
+  const area = rect && rect.w > 0 && rect.h > 0 ? rect : null
+  if (!levels || !levels[level] || !center || (!area && !(r > 0))) return []
   const L = levels[level]
   const ts = compact.ts
   const [gx, gy] = globalPixel(compact, L.k, center.lat, center.lon)
   // Canto superior esquerdo do mapa global na tela.
   const ox = cx - gx
   const oy = cy - gy
-  const clip = box || { x: cx - r, y: cy - r, w: 2 * r, h: 2 * r }
-  const x0 = Math.max(0, Math.floor((gx - r) / ts))
-  const x1 = Math.min(L.c - 1, Math.floor((gx + r) / ts))
-  const y0 = Math.max(0, Math.floor((gy - r) / ts))
-  const y1 = Math.min(L.r - 1, Math.floor((gy + r) / ts))
+  const cover = area || { x: cx - r, y: cy - r, w: 2 * r, h: 2 * r }
+  const clip = box || cover
+  const x0 = Math.max(0, Math.floor((cover.x - ox) / ts))
+  const x1 = Math.min(L.c - 1, Math.floor((cover.x + cover.w - ox - 1e-6) / ts))
+  const y0 = Math.max(0, Math.floor((cover.y - oy) / ts))
+  const y1 = Math.min(L.r - 1, Math.floor((cover.y + cover.h - oy - 1e-6) / ts))
+  // O retângulo toca o círculo (c)? (ponto do retângulo mais perto do centro)
+  const touches = (left, top, w, h, c) => {
+    const nx = Math.max(left, Math.min(c.x, left + w))
+    const ny = Math.max(top, Math.min(c.y, top + h))
+    return Math.hypot(nx - c.x, ny - c.y) <= c.r
+  }
   const out = []
   for (let ty = y0; ty <= y1; ty++) {
     for (let tx = x0; tx <= x1; tx++) {
       const left = Math.round(ox + tx * ts)
       const top = Math.round(oy + ty * ts)
-      // O bloco toca o círculo? (ponto do bloco mais perto do centro)
-      const nx = Math.max(left, Math.min(cx, left + ts))
-      const ny = Math.max(top, Math.min(cy, top + ts))
-      if (Math.hypot(nx - cx, ny - cy) > r) continue
+      if (!area && !touches(left, top, ts, ts, { x: cx, y: cy, r })) continue
       const x = Math.max(left, Math.round(clip.x))
       const y = Math.max(top, Math.round(clip.y))
       const right = Math.min(left + ts, Math.round(clip.x + clip.w))
       const bottom = Math.min(top + ts, Math.round(clip.y + clip.h))
       if (right <= x || bottom <= y) continue
+      if (area && circle && circle.r > 0 && !touches(x, y, right - x, bottom - y, circle)) continue
       out.push({ tx, ty, i: tileIndex(levels, level, tx, ty), x, y, w: right - x, h: bottom - y, pos_x: left - x, pos_y: top - y })
     }
   }

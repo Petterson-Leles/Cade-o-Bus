@@ -5,6 +5,7 @@
 import { mkdirSync, renameSync, statSync, rmSync, readFileSync, writeFileSync } from '@zos/fs'
 import { WATCH_MAP_DIR, watchTilePath } from '../shared/map-tiles'
 import { parseTileParams } from '../shared/map-download'
+import { receivedPathCandidates } from '../shared/transfer'
 
 export function ensureMapDir() {
   try {
@@ -42,15 +43,17 @@ export function tileOfFile(file) {
 
 // Move o arquivo recebido para data://map/<tema>-<k>-<x>_<y>.png. Idempotente: se o
 // mesmo aviso chegar duas vezes, a segunda acha o original já movido e só confirma o
-// destino (nunca apaga um bloco bom sem ter o novo em mãos).
-// Devolve { tile, ok } (ok: o bloco está no destino).
+// destino (nunca apaga um bloco bom sem ter o novo em mãos). O filePath do inbox
+// pode vir com ou sem data:// (receivedPathCandidates tenta os jeitos possíveis).
+// Devolve { tile, ok, reason } (ok: o bloco está no destino; reason: por que não).
 export function moveReceivedTile(file) {
   const tile = tileOfFile(file)
-  if (!tile) return { tile: null, ok: false }
-  const src = file.filePath
+  if (!tile) return { tile: null, ok: false, reason: 'params inválidos' }
   const target = watchTilePath(tile.theme, tile.k, tile.x, tile.y)
   ensureMapDir()
-  if (src && src !== target && fileExists(src)) {
+  const src = receivedPathCandidates(file).filter((p) => p !== target).find(fileExists) || null
+  let reason = ''
+  if (src) {
     try {
       if (fileExists(target)) rmSync({ path: target })
     } catch (e) {
@@ -62,18 +65,22 @@ export function moveReceivedTile(file) {
     } catch (e) {
       ok = false
     }
-    if (!ok) {
+    if (!ok || !fileExists(target)) {
       // Sem rename (outra pasta/partição): copia e apaga o original.
       try {
         const buf = readFileSync({ path: src })
         if (buf) writeFileSync({ path: target, data: buf })
         if (fileExists(target)) rmSync({ path: src })
+        else reason = 'não copiou'
       } catch (e) {
-        console.log('Mapa: não deu para guardar', src, e && e.message ? e.message : e)
+        reason = `cópia: ${e && e.message ? e.message : e}`
+        console.log('Mapa: não deu para guardar', src, reason)
       }
     }
   }
-  return { tile, ok: fileExists(target) }
+  const ok = fileExists(target)
+  if (!ok && !reason) reason = src ? 'não moveu' : `arquivo sumiu (${String(file.filePath || file.fileName || '?').slice(-24)})`
+  return { tile, ok, reason: ok ? '' : reason }
 }
 
 // Apaga um bloco guardado (cache LRU ou "Limpar mapa do relógio").

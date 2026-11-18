@@ -17,7 +17,7 @@
 // removido, ponto em edição); o side service só avisa o relógio quando mudam
 // "favorites", "theme" ou "vibrate".
 import { readFavorites, writeFavorites, newFavoriteId, removeFavorite, updateFavorite, readVibrate, writeVibrate, MAX_TEXT_LEN } from '../utils/favorites'
-import { readMapStates, writeMapStates, markDeleting, storedText, storedCount, makeCommand, MAP_COMMAND_KEY } from '../shared/map-download'
+import { readMapStates, writeMapStates, markDeleting, storedText, storedCount, makeCommand, MAP_COMMAND_KEY, MAP_DIAG_KEY, diagLines } from '../shared/map-download'
 import { MAP_ATTRIBUTION } from '../shared/map-tiles'
 // Sol (Claro) e lua (Escuro) do seletor de tema: SVG animado em data URI (Image).
 import { themeIcon, ICON_SIZE } from '../shared/theme-icons'
@@ -282,6 +282,11 @@ AppSettingsPage({
         Text({ style: { fontSize: '14px', color: C.text } }, `Mapa: ${storedText(states).replace(/^Ruas/, 'ruas')}`),
         small('Abra um ponto no relógio e as ruas em volta chegam do celular em segundos. O relógio guarda os blocos usados mais recentemente.', { marginTop: '6px' }),
         !deleting && storedCount(states) > 0 ? View({ style: { display: 'flex', flexDirection: 'row', marginTop: '8px' } }, [link('Limpar mapa do relógio', clear, C.remove)]) : null,
+        // Diagnóstico do envio (app-side/map-sync.js): para conferir onde o mapa parou.
+        View(
+          { style: { marginTop: '10px', paddingTop: '8px', borderTop: `1px solid ${C.border}` } },
+          diagLines(storage.getItem(MAP_DIAG_KEY)).map((line) => small(line, { fontSize: '12px', marginTop: '2px' }))
+        ),
         small(`${MAP_ATTRIBUTION} (ODbL).`, { fontSize: '11px', marginTop: '10px' })
       ])
     }

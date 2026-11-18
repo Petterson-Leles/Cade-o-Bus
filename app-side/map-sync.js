@@ -19,8 +19,8 @@ import { settingsLib } from '@zeppos/zml/base-side'
 import { outboxOf, readyStateOf as stateOf } from '../shared/transfer'
 import { withTimeout } from '../shared/bhtrans'
 import { MAP_MANIFEST_URL, MAP_THEMES, parseManifest, compactManifest, tileList, normalizeBits, hasBit, setBit, designLevels, centerLatLon } from '../shared/map-tiles'
-import { MAP_MANIFEST_KEY, MAP_COMMAND_KEY, MAP_PHONE_CACHE_KEY, readMapStates, writeMapStates, applyWatchBits, cleanThemeState, parseCommand, tileParams } from '../shared/map-download'
-import { manifestTag, demandPlan, enqueueDemand, takeNext, dropTheme, cleanPhoneCache, phoneTilePath, tilesNearPoints, PRIO } from '../shared/map-demand'
+import { MAP_MANIFEST_KEY, MAP_COMMAND_KEY, MAP_PHONE_CACHE_KEY, MAP_DIAG_KEY, readMapStates, writeMapStates, applyWatchBits, cleanThemeState, parseCommand, tileParams, cleanDiag, diagCount, diagError, diagManifest, diagWatch } from '../shared/map-download'
+import { manifestTag, demandPlan, enqueueDemand, takeNext, dropTheme, cleanPhoneCache, phoneTilePath, tilesNearPoints, confirmTiles, PRIO } from '../shared/map-demand'
 import { parseLevels } from '../shared/map-frame'
 import { readFavorites } from '../utils/favorites'
 import { readThemeName } from '../utils/colors'
@@ -61,6 +61,15 @@ export const mapSync = {
     this.mapLastSave = 0
     this.mapDirty = false
     this.mapWarming = false
+    // Diagnóstico (configurações): pedidos/enviados/confirmados e o último erro.
+    let diagRaw = null
+    try {
+      diagRaw = settingsLib.getItem(MAP_DIAG_KEY)
+    } catch (e) {
+      diagRaw = null
+    }
+    this.mapDiag = cleanDiag(diagRaw)
+    this.mapAwait = { dark: [], light: [] } // enviados, esperando o relógio confirmar
     this.mapManifest(false)
       .then(() => this.mapWarm())
       .catch(() => {})
@@ -91,10 +100,12 @@ export const mapSync = {
       const m = parseManifest(res.body)
       if (!m) throw new Error('Manifesto do mapa inválido')
       settingsLib.setItem(MAP_MANIFEST_KEY, JSON.stringify({ at: Date.now(), manifest: m }))
+      this.mapDiagSet(diagManifest(this.mapDiag, `ok v${m.version} ${m.generated}`))
       return this.mapSetManifest(m)
     } catch (e) {
       // Sem internet: usa o cache velho se houver.
       const m = cached && parseManifest(cached.manifest)
+      this.mapDiagSet(diagManifest(this.mapDiag, `${m ? 'cache velho; ' : ''}erro ${errText(e)}`))
       if (m) return this.mapSetManifest(m)
       throw e
     }
@@ -141,6 +152,12 @@ export const mapSync = {
     return this.mapStatesCache
   },
 
+  // Diagnóstico novo (gravado junto do estado, no máximo a cada SAVE_EVERY_MS).
+  mapDiagSet(d) {
+    this.mapDiag = d
+    this.mapDirty = true
+  },
+
   mapSave(force) {
     const now = Date.now()
     if (!force && (!this.mapDirty || now - this.mapLastSave < SAVE_EVERY_MS)) {
@@ -162,6 +179,7 @@ export const mapSync = {
     })
     this.mapStatesCache = writeMapStates(settingsLib, mine)
     if (this.mapCache) settingsLib.setItem(MAP_PHONE_CACHE_KEY, JSON.stringify(this.mapCache))
+    if (this.mapDiag) settingsLib.setItem(MAP_DIAG_KEY, JSON.stringify(this.mapDiag))
   },
 
   mapCacheHas(theme, i) {
@@ -190,8 +208,14 @@ export const mapSync = {
   // vizinhos. Devolve o que vai na resposta: { tag, manifest? (se o relógio não tem
   // este), queued }.
   mapOnDemand(d, level, centerM, stop) {
+    if (!d) return null
+    if (d.diag) this.mapDiagSet(diagWatch(this.mapDiag, d.diag))
     const m = this.mapManifestNow()
-    if (!m || !d) return null
+    // Manifesto ainda carregando (ou sem internet): o relógio mostra o motivo.
+    if (!m) {
+      this.mapSave(false)
+      return { tag: '', diag: { sent: this.mapDiag.sent, fail: this.mapDiag.fail, err: 'celular sem manifesto' } }
+    }
     const out = { tag: this.mapTag }
     if (d.mv !== this.mapTag) out.manifest = this.mapCompact
     const list = this.mapLists[d.theme]
@@ -205,13 +229,26 @@ export const mapSync = {
       this.mapDirty = true
       this.mapSave(false)
     }
-    if (states[d.theme].deleting || !Number.isInteger(level) || !(d.r > 0)) return out
+    // Enviados que o relógio agora diz ter: confirmados.
+    if (d.mv === this.mapTag) {
+      const c = confirmTiles(this.mapAwait[d.theme], have)
+      this.mapAwait[d.theme] = c.rest
+      if (c.confirmed > 0) this.mapDiagSet(diagCount(this.mapDiag, 'conf', c.confirmed))
+    }
+    out.diag = { sent: this.mapDiag.sent, fail: this.mapDiag.fail, err: this.mapDiag.err ? this.mapDiag.err.slice(0, 40) : '' }
+    if (states[d.theme].deleting) out.diag.err = 'limpando o mapa'
+    if (states[d.theme].deleting || !Number.isInteger(level) || !(d.r > 0 || d.view)) {
+      this.mapSave(false)
+      return out
+    }
     const center = centerLatLon(stop, centerM, this.mapCompact.m)
-    const plan = demandPlan({ compact: this.mapCompact, theme: d.theme, level, center, r: d.r, have, sentAt: this.mapSentAt[d.theme], now: Date.now() })
+    const plan = demandPlan({ compact: this.mapCompact, theme: d.theme, level, center, r: d.r, view: d.view || null, have, sentAt: this.mapSentAt[d.theme], now: Date.now() })
     this.mapSeq += 1
     this.mapQueue = enqueueDemand(this.mapQueue, plan, { theme: d.theme, seq: this.mapSeq })
     this.mapFails = 0
     out.queued = plan.filter((p) => p.prio === PRIO.VIEW).length
+    if (out.queued > 0) this.mapDiagSet(diagCount(this.mapDiag, 'req', out.queued))
+    this.mapSave(false)
     this.mapPump()
     return out
   },
@@ -235,10 +272,15 @@ export const mapSync = {
         () => {
           this.mapFails = 0
           this.mapSentAt[item.theme][item.i] = Date.now()
+          const wait = this.mapAwait[item.theme]
+          if (wait.indexOf(item.i) < 0) wait.push(item.i)
+          if (wait.length > 200) wait.splice(0, wait.length - 200)
+          this.mapDiagSet(diagCount(this.mapDiag, 'sent'))
         },
         (e) => {
           this.mapFails += 1
           console.log(`Mapa: bloco ${tile.name} falhou:`, errText(e))
+          this.mapDiagSet(diagError(diagCount(this.mapDiag, 'fail'), `${tile.name.replace(/\.png$/, '')}: ${errText(e)}`))
           // Um bloco da vista tenta de novo uma vez (no fim da fila de mesma prioridade).
           if (item.prio === PRIO.VIEW && !item.retried) this.mapQueue = enqueueDemand(this.mapQueue, [{ ...item, retried: true, prio: PRIO.NEAR }], { theme: item.theme, seq: 0 })
         }
@@ -260,13 +302,16 @@ export const mapSync = {
   async mapSendTile(theme, tile, total, next) {
     let ready = await this.mapPrepare(theme, tile)
     if (next && this.mapLists[next.theme] && this.mapLists[next.theme][next.i]) this.mapPrepare(next.theme, this.mapLists[next.theme][next.i]).catch(() => {})
+    const send = (path) => this.mapSendFile(path, tileParams(theme, tile, total)).catch((e) => {
+      throw new Error(`envio: ${errText(e)}`)
+    })
     try {
-      await this.mapSendFile(ready.out, tileParams(theme, tile, total))
+      await send(ready.out)
     } catch (e) {
       if (!ready.cached) throw e
       this.mapCacheMark(theme, tile.i, false)
       ready = await this.mapPrepare(theme, tile)
-      await this.mapSendFile(ready.out, tileParams(theme, tile, total))
+      await send(ready.out)
     }
   },
 
@@ -292,8 +337,12 @@ export const mapSync = {
   async mapDownloadConvert(theme, tile) {
     const png = `data://download/cob-${tile.name}`
     const converted = phoneTilePath(theme, tile.k, tile.x, tile.y)
-    await this.mapDownloadFile(tile.url, png)
-    const conv = await withTimeout(this.mapConvert({ filePath: png, targetFilePath: converted }), CONVERT_TIMEOUT_MS)
+    // Erro com a etapa na frente (diagnóstico nas configurações).
+    const stage = (name) => (e) => {
+      throw new Error(`${name}: ${errText(e)}`)
+    }
+    await this.mapDownloadFile(tile.url, png).catch(stage('download'))
+    const conv = await withTimeout(this.mapConvert({ filePath: png, targetFilePath: converted }), CONVERT_TIMEOUT_MS).catch(stage('convert'))
     const out = (conv && conv.targetFilePath) || converted
     if (out === converted) this.mapCacheMark(theme, tile.i, true)
     return out

@@ -8,31 +8,38 @@ import {
   zoomByCrown,
   zoomStep,
   dotsAlong,
-  MAP_VIEW_R,
-  FRAME_ICON_R,
+  MAP_VIEW,
+  fitsView,
   MIN_PX_PER_KM,
   MAX_PX_PER_KM,
   DEFAULT_PX_PER_KM
 } from '../shared/map-frame.js'
 
-const fitsAt = (frame, m) => Math.hypot(((m[0] - frame.center[0]) * frame.k) / 1000, ((m[1] - frame.center[1]) * frame.k) / 1000)
+// O ponto m (metros) cabe no retângulo da vista do enquadramento?
+const fits = (frame, m) => fitsView(frame, m, MAP_VIEW)
 
 test('chooseFrame automático: centro no meio, ônibus e ponto cabem', () => {
   const f = chooseFrame({ busXY: [0, -1800] })
   assert.equal(f.auto, true)
   assert.deepEqual(f.center, [0, -900])
-  assert.equal(f.k, Math.round(((MAP_VIEW_R - FRAME_ICON_R) * 2000) / 1800))
-  assert.ok(fitsAt(f, [0, 0]) <= MAP_VIEW_R - FRAME_ICON_R + 1)
-  assert.ok(fitsAt(f, [0, -1800]) <= MAP_VIEW_R - FRAME_ICON_R + 1)
+  // Na vertical o retângulo é mais alto (hy): a escala sai dele.
+  assert.equal(f.k, Math.round((MAP_VIEW.hy * 2000) / 1800))
+  assert.ok(fits(f, [0, 0]))
+  assert.ok(fits(f, [0, -1800]))
+  // Na horizontal, pela meia largura (hx).
+  const h = chooseFrame({ busXY: [1800, 0] })
+  assert.equal(h.k, Math.round((MAP_VIEW.hx * 2000) / 1800))
+  assert.ok(fits(h, [0, 0]) && fits(h, [1800, 0]))
 })
 
 test('chooseFrame: limites de escala e ônibus colado no ponto', () => {
-  assert.equal(chooseFrame({ busXY: [10, 0] }).k, Math.min(MAX_PX_PER_KM, Math.round(((MAP_VIEW_R - FRAME_ICON_R) * 2000) / 250)))
+  assert.equal(chooseFrame({ busXY: [10, 0] }).k, MAX_PX_PER_KM)
   assert.ok(chooseFrame({ busXY: [0, 0] }).k <= MAX_PX_PER_KM)
   // Muito longe: escala mínima e o ponto continua dentro do mapa.
   const far = chooseFrame({ busXY: [20000, 0] })
   assert.equal(far.k, MIN_PX_PER_KM)
-  assert.ok(fitsAt(far, [0, 0]) <= MAP_VIEW_R - FRAME_ICON_R + 1)
+  assert.ok(fits(far, [0, 0]))
+  assert.equal(fits(far, [20000, 0]), false)
 })
 
 test('chooseFrame: zoom manual centra no ponto; sem ônibus usa a escala padrão', () => {
@@ -100,13 +107,13 @@ test('níveis fixos do mapa de ruas: automático escolhe o maior que enquadra', 
   assert.equal(f.level, 1)
   assert.equal(f.k, 82.4)
   assert.equal(f.auto, true)
-  assert.ok(fitsAt(f, [0, 0]) <= MAP_VIEW_R - FRAME_ICON_R + 1)
-  assert.ok(fitsAt(f, [0, -1800]) <= MAP_VIEW_R - FRAME_ICON_R + 1)
+  assert.ok(fits(f, [0, 0]))
+  assert.ok(fits(f, [0, -1800]))
   // Bem perto: o maior nível. Muito longe: o menor (o ponto continua no mapa).
   assert.equal(chooseFrame({ busXY: [0, -300], levels }).level, 2)
   const far = chooseFrame({ busXY: [20000, 0], levels })
   assert.equal(far.level, 0)
-  assert.ok(fitsAt(far, [0, 0]) <= MAP_VIEW_R - FRAME_ICON_R + 1)
+  assert.ok(fits(far, [0, 0]))
   // Manual: o nível pedido, centrado no ponto.
   assert.deepEqual(chooseFrame({ busXY: [0, -1800], levels, level: 0 }), { k: 41.2, center: [0, 0], auto: false, level: 0 })
   // Sem ônibus: o nível mais perto da escala padrão.

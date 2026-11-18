@@ -1,5 +1,5 @@
 // Enquadramento do mini mapa (lógica pura, testada em test/map-frame.test.mjs).
-// O side service escolhe a escala e o centro; o relógio só manda o zoom manual.
+// O side service escolhe a escala e o centro (zoom só automático na tela do ponto).
 
 // Raio útil do mapa no relógio (pixels de design): o conteúdo é recortado a ele.
 export const MAP_VIEW_R = 114
@@ -34,35 +34,88 @@ export function parseZoom(value) {
   return Math.round(n)
 }
 
+// Área visível do mapa na tela do ponto (pixels de design, relativos ao centro do
+// mapa): o mapa ocupa a metade direita da tela e os ícones do ônibus e do ponto
+// ficam dentro deste retângulo (descontando a faixa de transição da esquerda e a
+// borda redonda). hx/hy: meia largura/altura para o CENTRO dos ícones.
+export const MAP_VIEW = Object.freeze({ hx: 76, hy: 116 })
+// Retângulo desenhado (canvas do mapa), relativo ao centro do mapa.
+export const MAP_CLIP = Object.freeze({ x0: -140, x1: 140, y0: -240, y1: 240 })
+// Aproxima um nível só quando ônibus e ponto cabem com essa folga (histerese: o
+// mapa não fica indo e voltando entre dois níveis a cada atualização).
+export const LEVEL_ZOOM_IN_MARGIN = 1.15
+
+const okXY = (m) => Array.isArray(m) && Number.isFinite(m[0]) && Number.isFinite(m[1])
+const cleanView = (v) => (v && v.hx > 0 && v.hy > 0 ? v : MAP_VIEW)
+
+// Escala ideal (px/km, sem limites) para o ponto (0, 0) e o ônibus caberem no
+// retângulo da vista com o centro no meio dos dois; null sem ônibus.
+export function idealScale(busXY, view = MAP_VIEW) {
+  if (!okXY(busXY)) return null
+  const v = cleanView(view)
+  const ax = Math.abs(busXY[0])
+  const ay = Math.abs(busXY[1])
+  const kx = ax > 0 ? (2 * v.hx * 1000) / ax : Infinity
+  const ky = ay > 0 ? (2 * v.hy * 1000) / ay : Infinity
+  const kSpan = (2 * Math.min(v.hx, v.hy) * 1000) / MIN_FRAME_SPAN_M
+  return Math.min(kx, ky, kSpan)
+}
+
+// Centro (metros) para a escala k: o meio entre ponto e ônibus, preso para o ponto
+// nunca sair da vista (se o ônibus não couber, ele fica na borda: o side service
+// o leva pelo trajeto até lá).
+export function frameCenter(busXY, k, view = MAP_VIEW) {
+  if (!okXY(busXY) || !(k > 0)) return [0, 0]
+  const v = cleanView(view)
+  // +2 px: a mesma folga de fitsView (a escala livre é arredondada).
+  const lx = ((v.hx + 2) * 1000) / k
+  const ly = ((v.hy + 2) * 1000) / k
+  const c = (val, lim) => Math.max(-lim, Math.min(lim, val / 2))
+  return [c(busXY[0], lx), c(busXY[1], ly)]
+}
+
+// O ponto m (metros) cabe na vista do enquadramento f? (folga de 2 px: arredondamento)
+export function fitsView(f, m, view = MAP_VIEW) {
+  if (!f || !okXY(m) || !Array.isArray(f.center)) return false
+  const v = cleanView(view)
+  const x = ((m[0] - f.center[0]) * f.k) / 1000
+  const y = ((m[1] - f.center[1]) * f.k) / 1000
+  return Math.abs(x) <= v.hx + 2 && Math.abs(y) <= v.hy + 2
+}
+
+// Nível para a escala ideal, com histerese: o maior nível <= ideal; se for mais
+// perto que o nível anterior, só aproxima com folga (margin).
+export function pickLevel(levels, ideal, prevLevel = null, margin = LEVEL_ZOOM_IN_MARGIN) {
+  if (!Array.isArray(levels) || levels.length === 0) return null
+  if (!(ideal > 0)) return 0
+  let cand = 0
+  for (let j = 0; j < levels.length; j++) if (levels[j] <= ideal) cand = j
+  const prev = Number.isInteger(prevLevel) && prevLevel >= 0 && prevLevel < levels.length ? prevLevel : null
+  if (prev === null || cand <= prev) return cand
+  let loose = 0
+  for (let j = 0; j < levels.length; j++) if (levels[j] * margin <= ideal) loose = j
+  return Math.max(prev, loose)
+}
+
 // Escala e centro do mapa, em metros na projeção centrada no ponto do usuário
 // (x leste, y sul). busXY: posição do ônibus em destaque ([x, y] em metros) ou null.
-// - zoom (manual): centro no ponto, escala pedida.
-// - automático: centro no meio do ônibus e do ponto, escala para caber os dois
-//   (limitada a MIN..MAX). Se a escala bater no mínimo, o centro vai para perto
-//   do ponto, para o ponto nunca sair do mapa.
+// - zoom (manual, formato antigo): centro no ponto, escala pedida.
+// - automático: centro no meio do ônibus e do ponto, escala para caber os dois no
+//   retângulo da vista (MAP_VIEW), limitada a MIN..MAX. Se a escala bater no
+//   mínimo, o centro vai para perto do ponto, para o ponto nunca sair do mapa.
 // Devolve { k, center: [x, y], auto }.
-// Com `levels` (mapa de ruas baixado no relógio: escalas fixas dos blocos, em px
-// de design por km, crescentes), a escala só pode ser um desses níveis:
-// - level (manual): índice do nível pedido pela coroa/botões;
-// - automático: o maior nível em que ônibus e ponto cabem (ou o menor de todos).
-// Nesse modo a saída leva também `level` (índice) e k não é arredondado.
-export function chooseFrame({ busXY = null, zoom = null, levels = null, level = null, viewR = MAP_VIEW_R, iconR = FRAME_ICON_R } = {}) {
+// Com `levels` (mapa de ruas: escalas fixas dos blocos, em px de design por km,
+// crescentes), a escala só pode ser um desses níveis (chooseLevelFrame) e a saída
+// leva também `level` (índice); prevLevel: nível do enquadramento anterior (histerese).
+export function chooseFrame({ busXY = null, zoom = null, levels = null, level = null, prevLevel = null, view = MAP_VIEW } = {}) {
   const lv = parseLevels(levels)
-  if (lv) return chooseLevelFrame({ busXY, levels: lv, level: parseLevelIndex(level, lv.length), viewR, iconR })
+  if (lv) return chooseLevelFrame({ busXY, levels: lv, level: parseLevelIndex(level, lv.length), prevLevel, view })
   const manual = parseZoom(zoom)
   if (manual !== null) return { k: manual, center: [0, 0], auto: false }
-  const ok = Array.isArray(busXY) && Number.isFinite(busXY[0]) && Number.isFinite(busXY[1])
-  if (!ok) return { k: DEFAULT_PX_PER_KM, center: [0, 0], auto: true }
-  const d = Math.hypot(busXY[0], busXY[1])
-  const span = Math.max(MIN_FRAME_SPAN_M, d)
-  const k = clampScale(((viewR - iconR) * 2 * 1000) / span)
-  if (d === 0) return { k: Math.round(k), center: [0, 0], auto: true }
-  // Centro a no máximo isso do ponto (em metros) para o ponto caber com folga.
-  const maxShiftM = ((viewR - iconR) * 1000) / k
-  const shift = Math.min(d / 2, maxShiftM)
-  const ux = busXY[0] / d
-  const uy = busXY[1] / d
-  return { k: Math.round(k), center: [ux * shift, uy * shift], auto: true }
+  const ideal = idealScale(busXY, view)
+  if (ideal === null) return { k: DEFAULT_PX_PER_KM, center: [0, 0], auto: true }
+  const k = Math.round(clampScale(ideal))
+  return { k, center: frameCenter(busXY, k, view), auto: true }
 }
 
 // Níveis fixos do mapa baixado: lista crescente de 1 a 6 escalas entre
@@ -83,41 +136,33 @@ export function parseLevelIndex(value, count) {
 }
 
 // Enquadramento nos níveis fixos (ver chooseFrame).
-export function chooseLevelFrame({ busXY, levels, level, viewR = MAP_VIEW_R, iconR = FRAME_ICON_R }) {
+export function chooseLevelFrame({ busXY, levels, level = null, prevLevel = null, view = MAP_VIEW }) {
   if (level !== null && level !== undefined) return { k: levels[level], center: [0, 0], auto: false, level }
-  const ok = Array.isArray(busXY) && Number.isFinite(busXY[0]) && Number.isFinite(busXY[1])
+  const ideal = idealScale(busXY, view)
   // Sem ônibus: o nível mais perto da escala padrão.
-  let i = 0
-  if (!ok) {
+  if (ideal === null) {
+    let i = 0
     for (let j = 1; j < levels.length; j++) if (Math.abs(levels[j] - DEFAULT_PX_PER_KM) < Math.abs(levels[i] - DEFAULT_PX_PER_KM)) i = j
     return { k: levels[i], center: [0, 0], auto: true, level: i }
   }
-  const d = Math.hypot(busXY[0], busXY[1])
-  const ideal = ((viewR - iconR) * 2 * 1000) / Math.max(MIN_FRAME_SPAN_M, d)
-  for (let j = 0; j < levels.length; j++) if (levels[j] <= ideal) i = j
+  const i = pickLevel(levels, ideal, prevLevel)
   const k = levels[i]
-  if (d === 0) return { k, center: [0, 0], auto: true, level: i }
-  const shift = Math.min(d / 2, ((viewR - iconR) * 1000) / k)
-  return { k, center: [(busXY[0] / d) * shift, (busXY[1] / d) * shift], auto: true, level: i }
+  return { k, center: frameCenter(busXY, k, view), auto: true, level: i }
 }
 
 // Fica no enquadramento automático anterior enquanto ele ainda serve: ônibus e
-// ponto cabem com folga e a escala não ficou longe demais da ideal (menos de
-// `maxZoomOut` vezes). Assim o mapa não "pula" a cada atualização e o ícone
-// continua deslizando. prev/ideal: saídas de chooseFrame.
-export function stableFrame(prev, ideal, busXY, { viewR = MAP_VIEW_R, iconR = FRAME_ICON_R, maxZoomOut = 1.6 } = {}) {
+// ponto cabem na vista e a escala não ficou longe demais da ideal. Assim o mapa
+// não "pula" a cada atualização e o ícone continua deslizando. prev/ideal: saídas
+// de chooseFrame (com níveis, ideal já vem com a histerese de pickLevel).
+export function stableFrame(prev, ideal, busXY, { view = MAP_VIEW, maxZoomOut = 1.6 } = {}) {
   if (!prev || !ideal || !prev.auto || !ideal.auto || !Array.isArray(prev.center)) return ideal
-  // Mapa de ruas ligado/desligado (ou níveis diferentes): não reaproveita.
+  // Mapa de ruas ligado/desligado: não reaproveita.
   const lv = (f) => (Number.isInteger(f.level) ? f.level : null)
   if ((lv(prev) === null) !== (lv(ideal) === null)) return ideal
+  const fits = fitsView(prev, [0, 0], view) && (!okXY(busXY) || fitsView(prev, busXY, view))
+  if (lv(prev) !== null) return lv(prev) === lv(ideal) && prev.k === ideal.k && fits ? prev : ideal
   if (!(prev.k > 0) || ideal.k / prev.k > maxZoomOut || prev.k > ideal.k * 1.05) return ideal
-  const fits = (m) => {
-    if (!m) return true
-    const x = ((m[0] - prev.center[0]) * prev.k) / 1000
-    const y = ((m[1] - prev.center[1]) * prev.k) / 1000
-    return Math.hypot(x, y) <= viewR - iconR + 2 // +2: a escala é arredondada
-  }
-  return fits([0, 0]) && fits(busXY) ? prev : ideal
+  return fits ? prev : ideal
 }
 
 // Coroa digital: graus girados -> nova escala (15° ≈ 1,35×). Positivo aproxima.
