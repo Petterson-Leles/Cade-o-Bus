@@ -148,3 +148,19 @@ test('tilesForView: blocos que cobrem o círculo, recortados ao quadrado do mapa
   assert.deepEqual(tilesForView({ compact: c, theme: 'dark', level: 1, center: west, cx: 330, cy: 229, r: 116 }), [])
   assert.deepEqual(tilesForView({ compact: c, theme: 'light', level: 2, center, cx: 0, cy: 0, r: 10 }), [])
 })
+
+import { prioritizeTiles as prio } from '../shared/map-tiles.js'
+
+test('prioritizeTiles: cidade inteira afastada, depois perto dos pontos, depois o resto', () => {
+  const manifest = { tileSize: 256, projection: { mPerDeg: 111320, latRef: -19.9, originLat: -19.76, originLon: -44.07 } }
+  const kx = 111320 * Math.cos((-19.9 * Math.PI) / 180)
+  // ponto a 1 km leste e 1 km sul da origem
+  const point = { lat: -19.76 - 1000 / 111320, lon: -44.07 + 1000 / kx }
+  const t = (i, level, k, x, y) => ({ i, level, k, x, y })
+  const tiles = [t(0, 0, 40, 0, 0), t(1, 0, 40, 1, 0), t(2, 2, 160, 9, 9), t(3, 2, 160, 0, 0), t(4, 1, 80, 30, 30)]
+  const order = prio(tiles, manifest, [point]).map((x) => x.i)
+  assert.deepEqual(order.slice(0, 2), [0, 1]) // nível afastado primeiro
+  assert.equal(order[2], 3) // bloco de 160 px/km que cobre o ponto
+  assert.deepEqual(order.slice(3).sort(), [2, 4])
+  assert.deepEqual(prio(tiles, null, []).map((x) => x.i), [0, 1, 2, 3, 4])
+})

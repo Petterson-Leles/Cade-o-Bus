@@ -115,8 +115,10 @@ export function tileInfo(theme, scale) {
   if (!compact || !compact.levels[theme]) return null
   const total = compactTotal(compact, theme)
   const rec = readTheme(theme)
-  if (total === 0 || rec.total !== total || countBits(rec.have, total) < total) return null
-  return { theme, compact, levels: designLevels(compact, theme, scale) }
+  // Mapa parcial também serve: o celular manda primeiro a cidade no zoom afastado e
+  // os arredores dos seus pontos; blocos que ainda não chegaram ficam de fora.
+  if (total === 0 || rec.total !== total || countBits(rec.have, total) === 0) return null
+  return { theme, compact, levels: designLevels(compact, theme, scale), have: rec.have, complete: countBits(rec.have, total) >= total, at: Date.now() }
 }
 
 // Progresso no relógio: { done, total }.

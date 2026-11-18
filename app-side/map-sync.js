@@ -14,7 +14,8 @@
 // https://docs.zepp.com/docs/reference/side-service-api/settings-storage/
 import { settingsLib } from '@zeppos/zml/base-side'
 import { withTimeout } from '../shared/bhtrans'
-import { MAP_MANIFEST_URL, MAP_THEMES, parseManifest, compactManifest, tileList, normalizeBits, mergeBits, countBits } from '../shared/map-tiles'
+import { MAP_MANIFEST_URL, MAP_THEMES, parseManifest, compactManifest, tileList, prioritizeTiles, normalizeBits, mergeBits, countBits } from '../shared/map-tiles'
+import { readFavorites } from '../utils/favorites'
 import {
   STATUS,
   MAP_MANIFEST_KEY,
@@ -169,7 +170,21 @@ export const mapSync = {
     const st = states[theme]
     const total = list.length
     if (st.total !== total) states[theme] = { ...st, total, have: normalizeBits(st.total === total ? st.have : '', total) }
-    const missing = missingTiles(list, states[theme].have)
+    // Primeiro a cidade no zoom afastado, depois os arredores dos seus pontos.
+    let favs = []
+    try {
+      favs = readFavorites(settingsLib)
+    } catch (e) {
+      favs = []
+    }
+    const missing = prioritizeTiles(missingTiles(list, states[theme].have), manifest, favs)
+    // Enquanto um bloco vai pelo Bluetooth, o próximo já é baixado e convertido.
+    const prepared = new Map()
+    const prepare = (tile) => {
+      if (!prepared.has(tile.i)) prepared.set(tile.i, this.mapPrepareTile(theme, tile))
+      return prepared.get(tile.i)
+    }
+    const pos = new Map(missing.map((t, k) => [t.i, k]))
     if (missing.length === 0) {
       this.mapSet(theme, { status: STATUS.READY, error: '' })
       this.mapNotify({ theme })
@@ -178,7 +193,24 @@ export const mapSync = {
     this.mapSet(theme, { status: STATUS.DOWNLOADING, error: '' })
     const result = await runQueue({
       tiles: missing,
-      process: (tile) => this.mapProcessTile(theme, tile, total),
+      gapMs: 0,
+      process: async (tile) => {
+        let ready
+        try {
+          ready = await prepare(tile)
+        } catch (e) {
+          prepared.delete(tile.i) // tenta de novo do zero
+          throw e
+        }
+        const next = missing[pos.get(tile.i) + 1]
+        if (next && !job.stop) prepare(next).catch(() => {})
+        this.mapStep(theme, `bloco ${tile.i + 1}: enviando ao relógio`)
+        try {
+          await this.mapSendFile(ready.out, tileParams(theme, tile, total))
+        } finally {
+          prepared.delete(tile.i)
+        }
+      },
       onDone: (tile) => {
         if (job.stop) return
         const s = this.mapStates()
@@ -203,8 +235,8 @@ export const mapSync = {
     if (s.done >= s.total) this.mapNotify({ theme })
   },
 
-  // Baixa, converte e envia um bloco. Resolve quando o relógio recebeu.
-  async mapProcessTile(theme, tile, total) {
+  // Baixa e converte um bloco (sem enviar). Resolve com { out } (arquivo pronto).
+  async mapPrepareTile(theme, tile) {
     const png = `data://download/cob-${tile.name}`
     const converted = `data://download/cob-c-${tile.name}`
     const n = tile.i + 1
@@ -218,8 +250,7 @@ export const mapSync = {
       const s = this.mapStates()
       s[theme] = { ...s[theme], stored: (s[theme].stored || 0) + size }
     }
-    this.mapStep(theme, `bloco ${n}: enviando ao relógio`)
-    await this.mapSendFile(out, tileParams(theme, tile, total))
+    return { out }
   },
 
   mapConvert(opts) {

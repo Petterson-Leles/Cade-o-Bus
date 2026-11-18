@@ -36,7 +36,7 @@ import { fadeFrame, passedKey, PASS_PILL_MS } from '../../shared/passing'
 import { scaleLabel } from '../../shared/text'
 import { guard } from '../../utils/crash'
 import { tileInfo } from '../../utils/map-store'
-import { tilesForView, centerLatLon, watchTilePath, crownSteps, stepLevel, nearestLevel } from '../../shared/map-tiles'
+import { tilesForView, centerLatLon, watchTilePath, crownSteps, stepLevel, nearestLevel, hasBit } from '../../shared/map-tiles'
 import { decideVibration } from '../../shared/vibrate'
 // Vibração do pulso: https://docs.zepp.com/docs/reference/device-app-api/newAPI/sensor/Vibrator/
 import { Vibrator, VIBRATOR_SCENE_SHORT_STRONG, VIBRATOR_SCENE_DURATION_LONG, VIBRATOR_SCENE_NOTIFICATION } from '@zos/sensor'
@@ -576,6 +576,8 @@ Page(
       const s = this.state
       const w = s.w
       if (!w.tiles) return
+      // Mapa ainda chegando: relê de tempos em tempos quais blocos já estão no relógio.
+      if (s.tiles && !s.tiles.complete && Date.now() - s.tiles.at > 10000) this.loadTiles()
       const t = s.tiles
       if (!t || !map || map.level === null || !t.compact.levels[t.theme][map.level]) {
         this.setVisible([...w.tiles, w.mask], false)
@@ -598,7 +600,7 @@ Page(
       const L = t.compact.levels[t.theme][map.level]
       w.tiles.forEach((img, i) => {
         const tile = list[i]
-        if (!tile) {
+        if (!tile || !hasBit(t.have, tile.i)) {
           img.setProperty(hmUI.prop.VISIBLE, false)
           s.tileKeys[i] = ''
           return
