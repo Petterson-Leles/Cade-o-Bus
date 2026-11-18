@@ -10,6 +10,7 @@ import { parseSettingsResult } from '../../utils/favorites'
 import { etaFromSummary } from '../../shared/summary'
 import { greeting } from '../../shared/text'
 import { guard } from '../../utils/crash'
+import { scheduleAlarms, parseAlarmParam, alertsOnNow } from '../../utils/alarms'
 // Tela acesa durante o download do mapa: o serviço do celular só roda com o app aberto.
 // https://docs.zepp.com/docs/reference/device-app-api/newAPI/display/setPageBrightTime/
 // https://docs.zepp.com/docs/reference/device-app-api/newAPI/display/pauseDropWristScreenOff/
@@ -38,7 +39,7 @@ const TAP_SLOP = 24
 
 Page(
   BasePage({
-    onInit: guard('tela inicial onInit', function () {
+    onInit: guard('tela inicial onInit', function (params) {
       // Estado próprio de cada abertura da página (não reaproveita o objeto do módulo).
       // Mantém o que a zml já colocou em this.state (ex.: messaging).
       // view: 'loading' | 'offline' | 'list' (favorites só vale em 'list').
@@ -60,11 +61,24 @@ Page(
         mapNote: '',
         mapThemes: null,
         mapSyncing: false,
+        // Aberta pelo alarme do início da janela de um ponto: { favId } (abre esse ponto).
+        alarm: null,
         destroyed: false
       }
       // No relógio, trocar o objeto this.state não funciona: atualiza o que já existe.
       if (!this.state || typeof this.state !== 'object') this.state = {}
       Object.assign(this.state, fresh)
+      // O param do alarme chega ao onInit da página (exemplo oficial) e ao onCreate do
+      // app.js (doc do set): aceita os dois e consome o do app para não repetir.
+      let alarm = parseAlarmParam(params)
+      try {
+        const g = getApp()._options.globalData
+        if (!alarm) alarm = parseAlarmParam(g.launchParam)
+        g.launchParam = null
+      } catch (e) {
+        // sem globalData
+      }
+      this.state.alarm = alarm
     }),
 
     build: guard('tela inicial build', function () {
@@ -99,7 +113,15 @@ Page(
       const { favorites, theme, vibrate } = parseSettingsResult(result, this.state.theme, this.state.vibrate)
       this.state.theme = theme
       this.state.vibrate = vibrate
+      // Alarmes do sistema: próximo início de janela de cada ponto (shared/schedule.js).
+      scheduleAlarms(favorites, vibrate)
       this.setView('list', favorites)
+      const alarm = this.state.alarm
+      if (alarm) {
+        this.state.alarm = null
+        const fav = favorites.find((f) => f.id === alarm.favId)
+        if (fav) this.open(fav, true)
+      }
       this.refreshSummary(true)
       this.syncMap()
     },
@@ -411,12 +433,16 @@ Page(
       })
     },
 
-    open(fav) {
+    open(fav, fromAlarm) {
       // Evita abrir duas vezes (botão e texto por cima podem responder ao mesmo toque).
       const now = Date.now()
       if (now - this.state.openedAt < 800) return
       this.state.openedAt = now
-      push({ url: 'page/detail/index.page', params: JSON.stringify({ fav, theme: this.state.theme, vibrate: this.state.vibrate }) })
+      // vibrate já vai filtrado pela janela do ponto (a tela do ponto também confere).
+      const master = this.state.vibrate
+      const params = { fav, theme: this.state.theme, vibrate: master && alertsOnNow(fav, master), master }
+      if (fromAlarm) params.alarm = true
+      push({ url: 'page/detail/index.page', params: JSON.stringify(params) })
     },
 
     // Os textos ficam por cima do botão do cartão; se eles segurarem o toque,

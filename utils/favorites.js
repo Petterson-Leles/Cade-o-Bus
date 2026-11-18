@@ -4,6 +4,7 @@
 // Na ida ao relógio o side service acrescenta street (rua do ponto abreviada).
 // Sem APIs do Zepp OS: roda no relógio, no celular e nos testes do Node.
 import { normalizeThemeName, readThemeName } from './colors.js'
+import { normalizeAlert } from '../shared/schedule.js'
 
 export const FAVORITES_KEY = 'favorites'
 // Interruptor "Vibrar no relógio" (settingsStorage: '0' desliga; padrão ligado).
@@ -56,6 +57,8 @@ export function sanitizeFavorites(list) {
     // Nome do ponto abreviado, acrescentado pelo side service (não é salvo no celular).
     const street = typeof item.street === 'string' ? item.street.trim().slice(0, MAX_STREET_LEN) : ''
     if (street) fav.street = street
+    // Horário de aviso do ponto (shared/schedule.js); sem ele, avisos desligados.
+    if (item.alert && typeof item.alert === 'object') fav.alert = normalizeAlert(item.alert)
     out.push(fav)
   })
   return out
@@ -89,6 +92,12 @@ export function removeFavorite(list, target) {
     ? list.findIndex((f) => f.id === target.id)
     : list.findIndex((f) => !f.id && sameContent(f, target))
   return index < 0 ? list.slice() : list.filter((_, i) => i !== index)
+}
+
+// Troca campos de um favorito (pelo id): nome e horário de aviso no "Editar".
+export function updateFavorite(list, id, patch) {
+  const base = Array.isArray(list) ? list : []
+  return base.map((f) => (id && f.id === id ? { ...f, ...patch } : f))
 }
 
 export function readVibrate(storage) {
@@ -135,8 +144,13 @@ export function parseDetailParams(params) {
   } catch (e) {
     data = null
   }
-  if (!data || typeof data !== 'object') return { fav: null, theme: normalizeThemeName(null), vibrate: true }
+  if (!data || typeof data !== 'object') return { fav: null, theme: normalizeThemeName(null), vibrate: true, master: true, fromAlarm: false }
   const raw = data.fav && typeof data.fav === 'object' ? data.fav : data
   const fav = sanitizeFavorites([raw])[0] || null
-  return { fav, theme: normalizeThemeName(data.theme), vibrate: data.vibrate !== false }
+  // fromAlarm: a tela foi aberta pelo alarme do início da janela (via tela inicial).
+  // vibrate: já filtrado pela janela do ponto na hora de abrir; master: o interruptor
+  // geral "Vibrar no relógio" (a tela do ponto confere a janela a cada leitura).
+  const vibrate = data.vibrate !== false
+  const master = typeof data.master === 'boolean' ? data.master : vibrate
+  return { fav, theme: normalizeThemeName(data.theme), vibrate, master, fromAlarm: data.alarm === true }
 }

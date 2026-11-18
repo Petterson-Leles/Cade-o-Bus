@@ -263,3 +263,36 @@ export function undoRemoval(list, record) {
   base.splice(i, 0, record.fav)
   return base
 }
+
+// Onde fica o ponto, pela sequência de pontos da linha naquele sentido (GTFS):
+// { street, toward, seq, total, prev, next, where, between } com ruas abreviadas.
+// - where: "Av. Itaite 530 · sentido Nova Cintra · 2º ponto";
+// - between: "entre Av. Itaite 210 e Av. Itaite 722" (ou "1º ponto da linha · antes de ..." /
+//   "último ponto · depois de ..."). null se o ponto não estiver na linha.
+export function stopContext(index, line, dir, stopId) {
+  const found = findLine(index, line)
+  if (!found || stopId === undefined || stopId === null || stopId === '') return null
+  const d = found.dirs.find((x) => x.dir === Number(dir))
+  if (!d) return null
+  const stops = lineStops(index, found.number, d.dir)
+  const i = stops.findIndex((st) => st.id === String(stopId).trim())
+  if (i < 0) return null
+  const street = abbreviateStreet(stops[i].name)
+  const prev = i > 0 ? abbreviateStreet(stops[i - 1].name) : ''
+  const next = i < stops.length - 1 ? abbreviateStreet(stops[i + 1].name) : ''
+  const toward = directionTitle(d.headsign).replace(/^Para /, '')
+  const parts = [street]
+  if (d.headsign) parts.push(`sentido ${toward}`)
+  parts.push(`${i + 1}º ponto`)
+  let between = ''
+  if (prev && next) between = `entre ${prev} e ${next}`
+  else if (next) between = `1º ponto da linha · antes de ${next}`
+  else if (prev) between = `último ponto · depois de ${prev}`
+  return { street, toward, seq: i + 1, total: stops.length, prev, next, where: parts.join(' · '), between }
+}
+
+// stopContext de um favorito salvo (null no modo avançado/lat-lon).
+export function favoriteContext(fav, index) {
+  if (!fav || fav.dir === undefined || !fav.stopId) return null
+  return stopContext(index, fav.line, fav.dir, fav.stopId)
+}

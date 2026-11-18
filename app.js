@@ -12,10 +12,13 @@ App(
   BaseApp({
     globalData: {
       // Uma instância só de LocalStorage para o app todo (utils/map-store.js).
-      mapStorage: null
+      mapStorage: null,
+      // param do alarme do sistema (utils/alarms.js), lido pela tela inicial.
+      launchParam: null
     },
-    onCreate() {
+    onCreate(param) {
       console.log('Cadê o Busão: app criado')
+      this.globalData.launchParam = typeof param === 'string' ? param : null
       try {
         this.globalData.mapStorage = createMapStorage()
       } catch (e) {

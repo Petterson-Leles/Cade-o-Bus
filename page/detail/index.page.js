@@ -38,6 +38,9 @@ import { guard } from '../../utils/crash'
 import { tileInfo } from '../../utils/map-store'
 import { tilesForView, centerLatLon, watchTilePath, crownSteps, stepLevel, nearestLevel, hasBit } from '../../shared/map-tiles'
 import { decideVibration } from '../../shared/vibrate'
+// Horário de aviso do ponto: só vibra dentro da janela (shared/schedule.js).
+import { latestAlert, QUIET_NOTE } from '../../shared/schedule'
+import { alertsOnNow } from '../../utils/alarms'
 // Vibração do pulso: https://docs.zepp.com/docs/reference/device-app-api/newAPI/sensor/Vibrator/
 import { Vibrator, VIBRATOR_SCENE_SHORT_STRONG, VIBRATOR_SCENE_DURATION_LONG, VIBRATOR_SCENE_NOTIFICATION } from '@zos/sensor'
 
@@ -97,12 +100,15 @@ Page(
       // Mantém o que a zml já colocou em this.state (ex.: messaging).
       // view guarda o que está na tela para poder repintar ao trocar o tema:
       // { kind: 'loading' } | { kind: 'status', title, detail, role } | { kind: 'data', result }.
-      const { fav, theme, vibrate } = parseDetailParams(params)
+      const { fav, theme, master, fromAlarm } = parseDetailParams(params)
       const fresh = {
         fav,
         theme,
-        vibrate, // interruptor "Vibrar no relógio" das configurações
-        vibMemory: null, // shared/vibrate.js: o que já foi avisado
+        vibrate: master, // interruptor geral "Vibrar no relógio" (a janela é conferida a cada leitura)
+        // shared/vibrate.js: o que já foi avisado. Aberta pelo alarme, a primeira
+        // leitura já avisa (memória vazia em vez de null).
+        vibMemory: fromAlarm ? { vehicle: null, level: 0, passed: [] } : null,
+        quiet: false, // fora da janela do ponto: rodapé "avisos desligados agora"
         vibrator: null,
         // Mapa de ruas baixado (utils/map-store.js tileInfo) ou null; com ele o zoom
         // só usa os níveis dos blocos: level = índice manual (null = automático).
@@ -165,6 +171,7 @@ Page(
       if (!this.state || !Array.isArray(this.state.all)) this.onInit()
       this.loadTiles()
       this.createWidgets()
+      this.updateQuiet()
       // Coroa digital: zoom manual do mapa (só um ouvinte por página; sai no onDestroy).
       onDigitalCrown({ callback: (key, degree) => this.onCrown(degree) })
       if (!this.state.fav) {
@@ -261,6 +268,8 @@ Page(
       w.info = this.text({ ...box(px(70)), y: px(360), h: px(30), text_size: px(22), color: c.muted })
       w.footer = this.text({ ...box(px(66)), y: px(392), h: px(26), text_size: px(17), color: c.muted })
       w.footer.setProperty(hmUI.prop.TEXT, this.state.footerText)
+      // Fora da janela de aviso do ponto: recado discreto embaixo do rodapé.
+      w.quiet = this.text({ x: px(120), y: px(418), w: px(240), h: px(24), text_size: px(16), color: c.muted, text: this.state.quiet ? QUIET_NOTE : '' })
 
       // Pílula "Esse passou · vem o próximo" (por cima de tudo, some sozinha).
       w.pill = this.widget(hmUI.widget.FILL_RECT, { x: px(105), y: px(84), w: px(270), h: px(36), radius: px(18), color: CHIP_BG })
@@ -296,8 +305,11 @@ Page(
         return
       }
       if (data.method !== 'SETTINGS_CHANGED' && data.method !== 'FAVORITES_CHANGED') return
-      const { theme, vibrate } = parseSettingsResult(data.result, this.state.theme, this.state.vibrate)
+      const { theme, vibrate, favorites } = parseSettingsResult(data.result, this.state.theme, this.state.vibrate)
       this.state.vibrate = vibrate
+      // Horário novo do ponto (Editar nas configurações).
+      if (this.state.fav) this.state.fav = { ...this.state.fav, alert: latestAlert(this.state.fav, favorites) }
+      this.updateQuiet()
       if (theme === this.state.theme) return
       this.state.theme = theme
       this.loadTiles()
@@ -842,6 +854,15 @@ Page(
 
     // Decide (shared/vibrate.js) e vibra: curta em "já já", longa em "chegando",
     // duas curtas quando o ônibus passa. Só com a página aberta.
+    // Dentro da janela do ponto? Atualiza o recado do rodapé e devolve se pode vibrar.
+    updateQuiet() {
+      const s = this.state
+      const allowed = alertsOnNow(s.fav, s.vibrate)
+      s.quiet = !allowed
+      if (s.w && s.w.quiet) s.w.quiet.setProperty(hmUI.prop.TEXT, s.quiet ? QUIET_NOTE : '')
+      return allowed
+    },
+
     vibrateFor(first, map) {
       const s = this.state
       const reading = {
@@ -851,7 +872,8 @@ Page(
       }
       const { memory, alert } = decideVibration(s.vibMemory, reading)
       s.vibMemory = memory
-      if (!alert || !s.vibrate) return
+      // Fora da janela do ponto (ou interruptor geral desligado): nada vibra.
+      if (!this.updateQuiet() || !alert) return
       const mode = alert === 'now' ? VIBRATOR_SCENE_DURATION_LONG : alert === 'passed' ? VIBRATOR_SCENE_NOTIFICATION : VIBRATOR_SCENE_SHORT_STRONG
       try {
         if (!s.vibrator) s.vibrator = new Vibrator()

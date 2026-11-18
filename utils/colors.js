@@ -147,27 +147,83 @@ export function writeThemeName(storage, name) {
   storage.setItem(THEME_KEY, normalizeThemeName(name))
 }
 
-// Cores da tela de configurações do celular (CSS), seguindo o tema claro.
-export const CSS = {
-  bg: '#F7F1E6', // creme
-  title: '#2B3440',
-  primary: '#2E7D78', // verde-azulado (botões)
-  primaryText: '#FFFFFF',
-  text: '#2B3440',
-  muted: '#646E78',
-  accent: '#F07A60', // coral (filete sob o título)
-  gradient: ['#3B4B5C', '#2E7D78', '#A8C9A0', '#E8D3A0', '#FFB088', '#F07A60', '#B5383A', '#5E2B24'],
-  border: '#E3D9C6',
-  white: '#FFFFFF',
-  chosenBg: '#EEF6F4', // linha encontrada, sentido e ponto escolhidos
-  chosenText: '#1F5F5B',
-  chip: '#2E7D78', // selo da linha
-  railLine: '#CFE2DE', // linha vertical da lista de pontos
-  chipSoft: '#E4EFEC',
-  card: '#FFFBF3',
-  danger: '#B5383A', // botão "Remover" (texto branco: 5.9:1)
-  dangerText: '#9B2F31', // texto de erro sobre dangerBg
-  dangerBg: '#FBE3DF',
-  success: '#356B3F',
-  successBg: '#E4F0DC'
+// Cores da tela de configurações do celular (CSS), uma paleta por tema do relógio:
+// a tela segue o tema escolhido em "Escuro"/"Claro" (chave theme do settingsStorage).
+// Contraste dos textos ≥ 4,5:1 (test/colors.test.mjs).
+const CSS_GRADIENT = ['#3B4B5C', '#2E7D78', '#A8C9A0', '#E8D3A0', '#FFB088', '#F07A60', '#B5383A', '#5E2B24']
+
+export const CSS_THEMES = Object.freeze({
+  light: Object.freeze({
+    name: 'light',
+    bg: '#F7F1E6', // creme
+    card: '#FFFFFF', // cartões
+    cardSoft: '#FFFBF3', // linhas dentro de cartão (sugestões, trilho)
+    border: '#E3D9C6', // borda sutil
+    title: '#2B3440',
+    text: '#2B3440',
+    muted: '#646E78',
+    primary: '#2E7D78', // fundo do botão principal e do selo
+    primaryText: '#FFFFFF',
+    accentText: '#2B6F6A', // links e textos em destaque (sobre cartão e fundo)
+    chip: '#2E7D78', // selo da linha
+    chipText: '#FFFFFF',
+    chipSoft: '#E4EFEC', // chips de dia desligados, ícone do sentido
+    chosenBg: '#EEF6F4', // escolhido (sentido, ponto, dia)
+    chosenText: '#1F5F5B',
+    railLine: '#CFE2DE', // trilho da lista de pontos
+    remove: '#9B4A47', // "Remover": vermelho apagado
+    snackBg: '#2B3440', // faixa "removido · Desfazer"
+    snackText: '#F7F1E6',
+    snackLink: '#8FD3CB',
+    accent: '#F07A60',
+    gradient: CSS_GRADIENT,
+    white: '#FFFFFF',
+    danger: '#B5383A',
+    dangerText: '#9B2F31', // erro sobre dangerBg
+    dangerBg: '#FBE3DF',
+    success: '#356B3F',
+    successBg: '#E4F0DC',
+    track: '#EFE7D8' // trilho do seletor de tema e da barrinha de progresso
+  }),
+  dark: Object.freeze({
+    name: 'dark',
+    bg: '#141A21', // azul-noite
+    card: '#1D252D',
+    cardSoft: '#222B34',
+    border: '#2A3540',
+    title: '#F3E3C3',
+    text: '#F3E3C3',
+    muted: '#9AA5A8',
+    primary: '#2E7D78',
+    primaryText: '#FFFFFF',
+    accentText: '#3E9C95',
+    chip: '#2E7D78',
+    chipText: '#FFFFFF',
+    chipSoft: '#24333A',
+    chosenBg: '#1C3533',
+    chosenText: '#9FD8D1',
+    railLine: '#2E4A48',
+    remove: '#E0928A',
+    snackBg: '#F3E3C3',
+    snackText: '#141A21',
+    snackLink: '#1F5F5B',
+    accent: '#F07A60',
+    gradient: CSS_GRADIENT,
+    white: '#FFFFFF',
+    danger: '#B5383A',
+    dangerText: '#F4B4AA',
+    dangerBg: '#3A2424',
+    success: '#A8D4A8',
+    successBg: '#1E3324',
+    track: '#151C23'
+  })
+})
+
+// Paleta CSS do tema salvo (ou de um nome de tema).
+export function cssTheme(nameOrStorage) {
+  const name = nameOrStorage && typeof nameOrStorage.getItem === 'function' ? readThemeName(nameOrStorage) : nameOrStorage
+  return CSS_THEMES[normalizeThemeName(name)]
 }
+
+// Compatibilidade: a paleta clara (antes era a única).
+export const CSS = CSS_THEMES.light

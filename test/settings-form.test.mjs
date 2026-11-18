@@ -242,3 +242,23 @@ test('removalRecord e undoRemoval devolvem o ponto ao mesmo lugar', () => {
 test('atalhos de nome', () => {
   assert.deepEqual(NAME_SHORTCUTS.map((s) => s.value), ['Casa', 'Trabalho', 'Faculdade'])
 })
+
+test('stopContext: rua, sentido, posição e "entre X e Y"', async () => {
+  const { stopContext, favoriteContext } = await import('../shared/settings-form.js')
+  const idx = {
+    ...INDEX,
+    lines: [['9250', 'X', [[0, 'Nova Cintra (Principal)', [0, 1, 2]]]]]
+  }
+  const mid = stopContext(idx, '9250', 0, '20')
+  assert.equal(mid.where, 'R. da Bahia 100 · sentido Nova Cintra · 2º ponto')
+  assert.equal(mid.between, 'entre Av. Afonso Pena 1500 e Pç. Sete')
+  assert.equal(mid.seq, 2)
+  assert.equal(mid.total, 3)
+  assert.equal(stopContext(idx, '9250', 0, '10').between, '1º ponto da linha · antes de R. da Bahia 100')
+  assert.equal(stopContext(idx, '9250', 0, '30').between, 'último ponto · depois de R. da Bahia 100')
+  assert.equal(stopContext(idx, '9250', 1, '20'), null)
+  assert.equal(stopContext(idx, '9250', 0, '99'), null)
+  assert.equal(stopContext(idx, '1111', 0, '20'), null)
+  assert.equal(favoriteContext({ line: '9250', dir: 0, stopId: '20' }, idx).seq, 2)
+  assert.equal(favoriteContext({ line: '9250', lat: '-19.9', lon: '-43.9' }, idx), null)
+})

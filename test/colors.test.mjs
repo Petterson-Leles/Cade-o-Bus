@@ -151,6 +151,33 @@ test('contraste legível na tela de configurações', () => {
   assert.ok(contrast(0xffffff, cssHex(CSS.danger)) >= 4.5)
 })
 
+test('contraste legível na tela de configurações nos dois temas (CSS_THEMES)', async () => {
+  const { CSS_THEMES, cssTheme } = await import('../utils/colors.js')
+  const pairs = [
+    ['text', 'bg'], ['muted', 'bg'], ['title', 'bg'], ['accentText', 'bg'],
+    ['text', 'card'], ['muted', 'card'], ['accentText', 'card'], ['remove', 'card'], ['muted', 'cardSoft'],
+    ['primaryText', 'primary'], ['chipText', 'chip'],
+    ['chosenText', 'chosenBg'], ['text', 'chosenBg'], ['muted', 'chosenBg'],
+    ['text', 'chipSoft'], ['text', 'track'],
+    ['snackText', 'snackBg'], ['snackLink', 'snackBg'],
+    ['dangerText', 'dangerBg'], ['dangerText', 'card'], ['success', 'successBg']
+  ]
+  for (const name of ['light', 'dark']) {
+    const t = CSS_THEMES[name]
+    for (const [fg, bg] of pairs) {
+      const r = contrast(cssHex(t[fg]), cssHex(t[bg]))
+      assert.ok(r >= 4.5, `${name} ${fg}/${bg}: ${r.toFixed(2)}`)
+    }
+  }
+  assert.equal(CSS_THEMES.dark.bg, '#141A21')
+  assert.equal(CSS_THEMES.dark.card, '#1D252D')
+  assert.equal(CSS_THEMES.dark.accentText, '#3E9C95')
+  assert.equal(cssTheme('light'), CSS_THEMES.light)
+  assert.equal(cssTheme('roxo'), CSS_THEMES.dark)
+  assert.equal(cssTheme(memoryStorage({ [THEME_KEY]: 'light' })), CSS_THEMES.light)
+  assert.equal(cssTheme(memoryStorage()), CSS_THEMES.dark)
+})
+
 test('readThemeName lê e valida o settingsStorage', () => {
   assert.equal(readThemeName(memoryStorage()), 'dark')
   assert.equal(readThemeName(memoryStorage({ [THEME_KEY]: 'light' })), 'light')
@@ -190,13 +217,17 @@ test('parseSettingsResult aceita o formato novo e o antigo', () => {
 })
 
 test('parseDetailParams lê { fav, theme } e o favorito puro', () => {
-  assert.deepEqual(parseDetailParams(JSON.stringify({ fav, theme: 'light', vibrate: true })), { fav, theme: 'light', vibrate: true })
-  assert.deepEqual(parseDetailParams(JSON.stringify(fav)), { fav, theme: 'dark', vibrate: true })
-  assert.deepEqual(parseDetailParams(JSON.stringify({ fav, theme: 'x' })), { fav, theme: 'dark', vibrate: true })
-  assert.deepEqual(parseDetailParams('{nao é json'), { fav: null, theme: 'dark', vibrate: true })
-  assert.deepEqual(parseDetailParams(undefined), { fav: null, theme: 'dark', vibrate: true })
+  assert.deepEqual(parseDetailParams(JSON.stringify({ fav, theme: 'light', vibrate: true })), { fav, theme: 'light', vibrate: true, master: true, fromAlarm: false })
+  assert.equal(parseDetailParams(JSON.stringify({ fav, alarm: true })).fromAlarm, true)
+  const p = parseDetailParams(JSON.stringify({ fav, vibrate: false, master: true }))
+  assert.equal(p.vibrate, false)
+  assert.equal(p.master, true)
+  assert.deepEqual(parseDetailParams(JSON.stringify(fav)), { fav, theme: 'dark', vibrate: true, master: true, fromAlarm: false })
+  assert.deepEqual(parseDetailParams(JSON.stringify({ fav, theme: 'x' })), { fav, theme: 'dark', vibrate: true, master: true, fromAlarm: false })
+  assert.deepEqual(parseDetailParams('{nao é json'), { fav: null, theme: 'dark', vibrate: true, master: true, fromAlarm: false })
+  assert.deepEqual(parseDetailParams(undefined), { fav: null, theme: 'dark', vibrate: true, master: true, fromAlarm: false })
   assert.equal(parseDetailParams(JSON.stringify({ fav, theme: 'dark', vibrate: false })).vibrate, false)
-  assert.deepEqual(parseDetailParams(JSON.stringify({ fav: { name: 'X' }, theme: 'light' })), { fav: null, theme: 'light', vibrate: true })
+  assert.deepEqual(parseDetailParams(JSON.stringify({ fav: { name: 'X' }, theme: 'light' })), { fav: null, theme: 'light', vibrate: true, master: true, fromAlarm: false })
 })
 
 test('busIcon: um PNG por faixa de ETA_BANDS e por tema', async () => {
