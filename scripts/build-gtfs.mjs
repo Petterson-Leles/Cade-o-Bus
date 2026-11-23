@@ -171,10 +171,17 @@ async function main() {
   })
 
   const stops = new Map()
-  ;(await readTable(zip, 'stops.txt')).forEach((s) => {
+  const stopRows = await readTable(zip, 'stops.txt')
+  // Estações (location_type 1): os pontos/plataformas dentro delas têm parent_station.
+  const stationNames = new Map()
+  stopRows.forEach((s) => {
+    if (String(s.location_type || '').trim() === '1' && s.stop_id) stationNames.set(s.stop_id, s.stop_name)
+  })
+  stopRows.forEach((s) => {
     const lat = Number(s.stop_lat)
     const lon = Number(s.stop_lon)
-    if (s.stop_id && Number.isFinite(lat) && Number.isFinite(lon)) stops.set(s.stop_id, { name: s.stop_name, lat, lon })
+    const station = s.parent_station ? stationNames.get(s.parent_station) || '' : ''
+    if (s.stop_id && Number.isFinite(lat) && Number.isFinite(lon)) stops.set(s.stop_id, { name: s.stop_name, lat, lon, station })
   })
   fs.closeSync(zip.fd)
 

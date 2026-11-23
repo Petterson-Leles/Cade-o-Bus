@@ -8,6 +8,12 @@ import { MAX_TEXT_LEN } from '../utils/favorites.js'
 import { findLine, lineStops, stopById, normalizeLineNumber, searchLines } from './gtfs.js'
 import { abbreviateStreet, foldText, directionTitle } from './text.js'
 
+// Nome automático do ponto: a estação ("Estação São Gabriel") ou a rua do GTFS.
+export function autoStopName(stop) {
+  if (!stop) return ''
+  return stop.station || stop.name || ''
+}
+
 // Quantas sugestões de linha mostrar enquanto o número não bate com uma linha.
 export const MAX_LINE_SUGGESTIONS = 6
 // Atalhos para o nome do ponto.
@@ -220,7 +226,7 @@ export function buildFavorite(draft, id, index) {
   }
   const c = draftChoices(d, index)
   const stop = c.stop || stopById(index, d.stopId)
-  const name = String(d.name || '').trim() || stop.name
+  const name = String(d.name || '').trim() || autoStopName(stop)
   return {
     id,
     name: name.slice(0, MAX_TEXT_LEN).trim(),
@@ -237,12 +243,13 @@ export function filterStops(stops, query) {
   const q = foldText(query)
   const list = Array.isArray(stops) ? stops : []
   if (!q) return list.slice()
-  return list.filter((st) => foldText(st.name).indexOf(q) >= 0 || foldText(st.street).indexOf(q) >= 0)
+  return list.filter((st) => foldText(st.name).indexOf(q) >= 0 || foldText(st.street).indexOf(q) >= 0 || foldText(st.station).indexOf(q) >= 0)
 }
 
 // Subtítulo de um ponto salvo: rua abreviada (GTFS) ou as coordenadas.
 export function favoriteStreet(fav, index) {
   const stop = fav && fav.stopId ? stopById(index, fav.stopId) : null
+  if (stop && stop.station) return stop.station === fav.name ? abbreviateStreet(stop.name) : `${stop.station} · ${abbreviateStreet(stop.name)}`
   if (stop && stop.name) return abbreviateStreet(stop.name)
   return fav ? `${fav.lat}, ${fav.lon}` : ''
 }

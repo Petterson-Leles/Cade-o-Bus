@@ -68,3 +68,17 @@ export function scaleLabel(pxPerKm, auto) {
   const per100 = k >= 100 ? `${Math.round(100000 / k)} m` : `${(100 / k).toFixed(1).replace('.', ',')} km`
   return `${mode} · ${per100} por 100 px`
 }
+
+// Nome da estação do GTFS -> "Estação X" ("Estacao Move Sao Judas Tadeu" ->
+// "Estação São Judas Tadeu", "Mineirão" -> "Estação Mineirão").
+const STATION_FIXES = [[/\bSao\b/g, 'São'], [/\bEstacao\b/gi, 'Estação']]
+export function stationLabel(raw) {
+  if (typeof raw !== 'string') return ''
+  let s = raw.trim().replace(/\s+/g, ' ')
+  if (!s) return ''
+  STATION_FIXES.forEach(([re, to]) => {
+    s = s.replace(re, to)
+  })
+  s = s.replace(/^Estação\s+(MOVE\s+)?/i, '').replace(/\s*-\s*Plataforma.*$/i, '').trim()
+  return s ? `Estação ${s}` : ''
+}

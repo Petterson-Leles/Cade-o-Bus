@@ -373,7 +373,8 @@ AppSettingsPage({
           [
             View({ style: { width: '24px', display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 } }, [seg(!first), dot, seg(!last)]),
             View({ style: { flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', paddingLeft: '6px', paddingTop: '6px', paddingBottom: '6px' } }, [
-              Text({ bold: selected, style: { fontSize: '13px', color: selected ? C.chosenText : C.text } }, st.street),
+              st.station ? Text({ bold: true, style: { fontSize: '13px', color: selected ? C.chosenText : C.primary } }, st.station) : null,
+              Text({ bold: selected && !st.station, style: { fontSize: st.station ? '12px' : '13px', color: selected ? C.chosenText : st.station ? C.muted : C.text } }, st.street),
               selected && ctx && ctx.between ? Text({ style: { fontSize: '12px', color: C.muted, marginTop: '2px' } }, ctx.between) : null
             ].filter(Boolean)),
             View({ style: { display: 'flex', alignItems: 'center' } }, [Text({ style: { fontSize: '11px', color: C.muted } }, `${st.seq}º`)])
@@ -390,9 +391,11 @@ AppSettingsPage({
 
     // 4. Nome (opcional), só depois de escolher o ponto (no avançado é obrigatório).
     if (choices.stop || draft.manual) {
-      const example = choices.stop ? `Ex.: Casa (${choices.stop.street || choices.stop.name})` : 'Ex.: Casa'
+      const auto = choices.stop && choices.stop.station
+      const example = auto ? choices.stop.station : choices.stop ? `Ex.: Casa (${choices.stop.street || choices.stop.name})` : 'Ex.: Casa'
       pick.push(fieldLabel(draft.manual ? 'Nome do ponto' : 'Como você chama esse ponto? (opcional)'))
       pick.push(field(draft.name, example, (val) => change('name', val)))
+      if (auto && !String(draft.name || '').trim()) pick.push(small(`Se deixar em branco, aparece no relógio como “${choices.stop.station}”.`, { marginTop: '6px' }))
       pick.push(
         View(
           { style: { display: 'flex', flexDirection: 'row', flexWrap: 'wrap', marginTop: '8px', gap: '6px' } },

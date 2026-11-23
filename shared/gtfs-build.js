@@ -1,5 +1,6 @@
 // Montagem do pacote de dados GTFS (lógica pura, usada por scripts/build-gtfs.mjs
 // e testada em test/gtfs-build.test.mjs). Não lê arquivos: recebe as linhas já lidas.
+import { stationLabel } from './text.js'
 import { encodePolyline, simplifyLatLon } from './polyline.js'
 
 export const PACKAGE_VERSION = 1
@@ -222,15 +223,17 @@ export function buildPackage({ feed = {}, routes, patterns, shapes, stopSeqs, st
   // Tabela de pontos (só os usados), ordenada por id; as linhas apontam por índice.
   const ids = Array.from(usedStops).sort((a, b) => compareLineNumbers(a, b))
   const pos = new Map(ids.map((id, i) => [id, i]))
-  const table = { id: [], name: [], lat: [], lon: [] }
+  const table = { id: [], name: [], lat: [], lon: [], st: [] }
   ids.forEach((id) => {
     const s = stops.get(id)
     table.id.push(id)
     table.name.push(String(s.name || '').trim())
     table.lat.push(round5(s.lat))
     table.lon.push(round5(s.lon))
+    table.st.push(stationLabel(s.station || ''))
   })
 
+  if (!table.st.some(Boolean)) delete table.st
   const index = {
     v: PACKAGE_VERSION,
     feed: String(feed.feed_version || ''),

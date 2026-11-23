@@ -26,7 +26,9 @@ function lookup(index) {
 function stopAt(index, i) {
   const s = index.stops
   if (!(i >= 0 && i < s.id.length)) return null
-  return { id: String(s.id[i]), name: s.name[i], lat: s.lat[i] / 1e5, lon: s.lon[i] / 1e5 }
+  const out = { id: String(s.id[i]), name: s.name[i], lat: s.lat[i] / 1e5, lon: s.lon[i] / 1e5 }
+  if (s.st && s.st[i]) out.station = s.st[i]
+  return out
 }
 
 // Linha pelo número -> { number, name, dirs: [{ dir, headsign, stops }] } ou null.
