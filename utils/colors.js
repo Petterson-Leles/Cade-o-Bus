@@ -133,7 +133,7 @@ export function mixColor(a, b, k) {
 export const ETA_BANDS = Object.freeze([
   Object.freeze({ max: 2, dark: 0xff4d6d, light: 0xd62846, label: 'chegando: corre!' }),
   Object.freeze({ max: 5, dark: 0xff8c42, light: 0xd9620f, label: 'já já' }),
-  Object.freeze({ max: 10, dark: 0xffd166, light: 0x9a6a00, label: 'dá tempo' }),
+  Object.freeze({ max: 10, dark: 0xffb547, light: 0xc27000, label: 'dá tempo' }),
   Object.freeze({ max: 15, dark: 0x7bd389, light: 0x2e7d32, label: 'tranquilo' }),
   Object.freeze({ max: Infinity, dark: 0x3da9fc, light: 0x1565c0, label: 'longe' })
 ])
