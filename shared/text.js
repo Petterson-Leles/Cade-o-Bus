@@ -82,3 +82,12 @@ export function stationLabel(raw) {
   s = s.replace(/^Estação\s+(MOVE\s+)?/i, '').replace(/\s*-\s*Plataforma.*$/i, '').trim()
   return s ? `Estação ${s}` : ''
 }
+
+// Tipo do ponto para o ícone no mapa: 'central' (estações de integração grandes,
+// hexágono), 'move' (estações MOVE/BRT, "M") ou 'street' (ponto de rua, losango).
+export const CENTRAL_STATIONS = Object.freeze(['Estação São Gabriel', 'Estação Pampulha', 'Estação Vilarinho', 'Estação Venda Nova', 'Estação Barreiro', 'Estação Diamante'])
+export function stopKind(stop) {
+  const st = stop && typeof stop.station === 'string' ? stop.station : ''
+  if (!st) return 'street'
+  return CENTRAL_STATIONS.indexOf(st) >= 0 ? 'central' : 'move'
+}

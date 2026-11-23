@@ -31,3 +31,13 @@ test('favorito sem nome num ponto de estação recebe o nome da estação', () =
   assert.equal(named.name, 'Trabalho')
   assert.ok(filterStops([{ ...stop, street: 'R. X' }], 'sao gabriel').length === 1)
 })
+
+test('stopKind separa rua, MOVE e estação central', async () => {
+  const { stopKind } = await import('../shared/text.js')
+  assert.equal(stopKind({ name: 'Rua X' }), 'street')
+  assert.equal(stopKind({ station: 'Estação Mineirão' }), 'move')
+  assert.equal(stopKind({ station: 'Estação São Gabriel' }), 'central')
+  assert.equal(stopKind(null), 'street')
+  const names = new Set(INDEX.stops.st.filter(Boolean))
+  ;['Estação São Gabriel', 'Estação Pampulha', 'Estação Vilarinho', 'Estação Venda Nova', 'Estação Barreiro', 'Estação Diamante'].forEach((n) => assert.ok(names.has(n), n))
+})
