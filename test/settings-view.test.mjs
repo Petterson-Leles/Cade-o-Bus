@@ -88,9 +88,12 @@ test('selo suave e textos sobre o fundo suave legíveis (CSS_THEMES)', () => {
 // ---- Tela real (setting/index.js) com componentes falsos: árvore de nós ----
 
 // O código da tela importa sem extensão (como no bundle do Zeus): completa ".js".
+// Raiz do projeto a partir deste arquivo (funciona com qualquer nome de pasta do clone).
+const ROOT_URL = new URL('../', import.meta.url).href
+
 registerHooks({
   resolve(spec, ctx, next) {
-    if (/^\.\.?\//.test(spec) && !/\.[cm]?js$/.test(spec) && ctx.parentURL && ctx.parentURL.includes('/Cade-o-Bus/')) {
+    if (/^\.\.?\//.test(spec) && !/\.[cm]?js$/.test(spec) && ctx.parentURL && ctx.parentURL.startsWith(ROOT_URL) && !ctx.parentURL.includes('/node_modules/')) {
       try {
         return next(spec + '.js', ctx)
       } catch (e) {
