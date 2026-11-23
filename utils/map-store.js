@@ -72,7 +72,17 @@ export function readManifest() {
 
 export function saveManifest(compact) {
   const m = parseCompactManifest(compact)
-  if (m) set(KEY_MANIFEST, JSON.stringify(m))
+  if (!m) return m
+  // Mapa novo (versão ou data mudou, p.ex. cores novas): os blocos guardados ficam
+  // velhos. Zera os bits para o celular mandar de novo; os arquivos são sobrescritos.
+  const old = readManifest()
+  if (old && manifestTag(old) !== manifestTag(m)) {
+    MAP_THEMES.forEach((t) => {
+      const rec = readTheme(t)
+      writeTheme(t, { have: normalizeBits('', rec.total), total: rec.total })
+    })
+  }
+  set(KEY_MANIFEST, JSON.stringify(m))
   return m
 }
 

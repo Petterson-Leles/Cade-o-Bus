@@ -5,7 +5,7 @@ import * as hmUI from '@zos/ui'
 import { px } from '@zos/utils'
 import { push } from '@zos/router'
 import { BasePage } from '@zeppos/zml/base-page'
-import { DEVICE_WIDTH, DEVICE_HEIGHT, getTheme, DEFAULT_THEME, GRADIENT, CHIP_BG, CHIP_TEXT, etaColor, busIcon } from '../../utils/ui'
+import { DEVICE_WIDTH, DEVICE_HEIGHT, getTheme, DEFAULT_THEME, GRADIENT, etaColor, busIcon } from '../../utils/ui'
 import { parseSettingsResult } from '../../utils/favorites'
 import { etaFromSummary } from '../../shared/summary'
 import { greeting } from '../../shared/text'
@@ -47,7 +47,8 @@ const CARD_H = 82
 const CARD_STEP = 94
 const CARD_R = 22
 const cardX = (i) => (i === 1 ? 54 : 72)
-// Barrinha sob o título: segmentos com cores do gradiente "Pôr do sol".
+// Barrinha sob o título: segmentos com cores do gradiente "Azul BH e coral"
+// (azul-céu, amarelo, coral e rosa-coral).
 const BAR_COLORS = [GRADIENT[1], GRADIENT[3], GRADIENT[4], GRADIENT[5]]
 const BAR_SEG_W = 16
 const BAR_GAP = 2
@@ -337,7 +338,7 @@ Page(
       // Saudação.
       this.text({ x: px(100), y: px(46), w: DEVICE_WIDTH - 2 * px(100), h: px(30), text: greeting(new Date().getHours()), text_size: px(22), color: c.muted })
       this.text({ x: px(70), y: px(74), w: DEVICE_WIDTH - 2 * px(70), h: px(44), text: 'Cadê o Busão', text_size: px(34), color: c.title })
-      // Barrinha em segmentos do gradiente (verde-azulado até o coral) sob o título.
+      // Barrinha em segmentos do gradiente (azul-céu até o coral) sob o título.
       const barW = BAR_COLORS.length * BAR_SEG_W + (BAR_COLORS.length - 1) * BAR_GAP
       const barX = (480 - barW) / 2
       BAR_COLORS.forEach((color, i) => {
@@ -425,9 +426,9 @@ Page(
         })
         const overlay = []
         overlay.push(this.add(hmUI.widget.STROKE_RECT, { x: px(x), y: px(y), w: px(w), h: px(CARD_H), radius: px(CARD_R), line_width: px(2), color: c.cardEdge }))
-        // Selo da linha (pílula verde-azulada, texto branco).
-        overlay.push(this.add(hmUI.widget.FILL_RECT, { x: px(x + 14), y: px(y + 21), w: px(68), h: px(40), radius: px(20), color: CHIP_BG }))
-        overlay.push(this.text({ x: px(x + 16), y: px(y + 21), w: px(64), h: px(40), text: fav.line, text_size: px(fav.line.length > 4 ? 18 : 22), color: CHIP_TEXT }))
+        // Selo da linha (pílula na cor de destaque do tema).
+        overlay.push(this.add(hmUI.widget.FILL_RECT, { x: px(x + 14), y: px(y + 21), w: px(68), h: px(40), radius: px(20), color: c.chip }))
+        overlay.push(this.text({ x: px(x + 16), y: px(y + 21), w: px(64), h: px(40), text: fav.line, text_size: px(fav.line.length > 4 ? 18 : 22), color: c.chipText }))
         // Nome (sem negrito: o TEXT do Zepp OS não tem peso de fonte) e rua do ponto.
         const textW = w - 96 - 78
         overlay.push(this.text({ x: px(x + 94), y: px(y + 10), w: px(textW), h: px(36), text: fav.name, text_size: px(27), color: c.text, align_h: hmUI.align.LEFT }))

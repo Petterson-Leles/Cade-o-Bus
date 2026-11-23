@@ -44,8 +44,8 @@ const cssHex = (s) => parseInt(s.slice(1), 16)
 test('getTheme devolve o tema pedido', () => {
   assert.equal(getTheme('dark'), THEMES.dark)
   assert.equal(getTheme('light'), THEMES.light)
-  assert.equal(getTheme('light').bg, 0xf7f1e6)
-  assert.equal(getTheme('dark').bg, 0x141a21)
+  assert.equal(getTheme('light').bg, 0xeef4fa)
+  assert.equal(getTheme('dark').bg, 0x0b1a2b)
 })
 
 test('valores desconhecidos caem no tema escuro', () => {
@@ -65,24 +65,31 @@ test('os dois temas têm os mesmos papéis de cor', () => {
   }
 })
 
-test('paleta Pôr do sol nos papéis certos', () => {
+test('paleta Azul BH e coral nos papéis certos', () => {
   for (const t of Object.values(THEMES)) {
-    assert.equal(t.button, 0x2e7d78)
-    assert.equal(t.buttonText, 0xffffff)
     assert.equal(t.title, t.text)
+    assert.equal(t.button, t.chip)
+    assert.equal(t.routeHi, t.chip)
+    assert.equal(t.eta, ETA_BANDS[ETA_BANDS.length - 1][t.name])
   }
-  assert.equal(THEMES.dark.text, 0xf3e3c3)
-  assert.equal(THEMES.dark.muted, 0xb4bec2)
-  assert.equal(THEMES.dark.divider, 0x46525e)
-  assert.equal(THEMES.dark.route, 0x8593a0)
-  assert.equal(THEMES.dark.error, 0xf07a60)
-  assert.equal(THEMES.light.text, 0x2b3440)
-  assert.equal(THEMES.light.divider, 0xe3d9c6)
-  assert.equal(THEMES.light.error, 0xb5383a)
-  assert.deepEqual(GRADIENT, [0x3b4b5c, 0x2e7d78, 0xa8c9a0, 0xe8d3a0, 0xffb088, 0xf07a60, 0xb5383a, 0x5e2b24])
+  assert.equal(THEMES.dark.button, 0x3da9fc)
+  assert.equal(THEMES.dark.buttonText, 0x06121f)
+  assert.equal(THEMES.dark.text, 0xeaf2fb)
+  assert.equal(THEMES.dark.muted, 0x9db2c8)
+  assert.equal(THEMES.dark.route, 0x56708c)
+  assert.equal(THEMES.dark.error, 0xff4d6d)
+  assert.equal(THEMES.dark.outline, 0x000814)
+  assert.equal(THEMES.dark.trail, 0xff8c42)
+  assert.equal(THEMES.light.button, 0x1565c0)
+  assert.equal(THEMES.light.buttonText, 0xffffff)
+  assert.equal(THEMES.light.text, 0x0b1a2b)
+  assert.equal(THEMES.light.muted, 0x4d627a)
+  assert.equal(THEMES.light.error, 0xc62440)
+  assert.equal(THEMES.light.trail, 0xd9620f)
+  assert.deepEqual(GRADIENT, [0x1565c0, 0x3da9fc, 0x7bd389, 0xffd166, 0xff8c42, 0xff4d6d, 0xd62846, 0x0b1a2b])
   assert.deepEqual(CSS.gradient.map(cssHex), GRADIENT)
-  assert.equal(CSS.bg, '#F7F1E6')
-  assert.equal(CSS.primary, '#2E7D78')
+  assert.equal(CSS.bg, '#EEF4FA')
+  assert.equal(CSS.primary, '#1565C0')
 })
 
 test('contraste legível em cada tema', () => {
@@ -109,17 +116,17 @@ test('cores do tempo de chegada: >= 3:1 (número e rótulo grandes) no fundo do 
 
 test('etaColor esquenta quando o ônibus está perto', () => {
   const cases = [
-    [0, 0xf07a60, 0xb5383a, 'chegando: corre!'],
-    [1, 0xf07a60, 0xb5383a, 'chegando: corre!'],
-    [2, 0xf07a60, 0xb5383a, 'chegando: corre!'],
-    [3, 0xffb088, 0xc25a2e, 'já já'],
-    [5, 0xffb088, 0xc25a2e, 'já já'],
-    [6, 0xe8d3a0, 0x8a6a1f, 'dá tempo'],
-    [10, 0xe8d3a0, 0x8a6a1f, 'dá tempo'],
-    [11, 0xa8c9a0, 0x3f7a4a, 'tranquilo'],
-    [15, 0xa8c9a0, 0x3f7a4a, 'tranquilo'],
-    [16, 0x4fa39c, 0x2e7d78, 'longe'],
-    [90, 0x4fa39c, 0x2e7d78, 'longe']
+    [0, 0xff4d6d, 0xd62846, 'chegando: corre!'],
+    [1, 0xff4d6d, 0xd62846, 'chegando: corre!'],
+    [2, 0xff4d6d, 0xd62846, 'chegando: corre!'],
+    [3, 0xff8c42, 0xd9620f, 'já já'],
+    [5, 0xff8c42, 0xd9620f, 'já já'],
+    [6, 0xffd166, 0x9a6a00, 'dá tempo'],
+    [10, 0xffd166, 0x9a6a00, 'dá tempo'],
+    [11, 0x7bd389, 0x2e7d32, 'tranquilo'],
+    [15, 0x7bd389, 0x2e7d32, 'tranquilo'],
+    [16, 0x3da9fc, 0x1565c0, 'longe'],
+    [90, 0x3da9fc, 0x1565c0, 'longe']
   ]
   for (const [min, dark, light, label] of cases) {
     assert.equal(etaColor(min, 'dark'), dark, `dark ${min}`)
@@ -132,11 +139,11 @@ test('etaColor esquenta quando o ônibus está perto', () => {
 })
 
 test('etaColor: tema desconhecido cai no escuro e minuto inválido em "longe"', () => {
-  assert.equal(etaColor(1, 'roxo'), 0xf07a60)
-  assert.equal(etaColor(1, undefined), 0xf07a60)
+  assert.equal(etaColor(1, 'roxo'), 0xff4d6d)
+  assert.equal(etaColor(1, undefined), 0xff4d6d)
   for (const v of [NaN, null, undefined, '', 'abc', {}]) {
     assert.equal(etaLabel(v), 'longe', String(v))
-    assert.equal(etaColor(v, 'light'), 0x2e7d78)
+    assert.equal(etaColor(v, 'light'), 0x1565c0)
   }
 })
 
@@ -170,9 +177,9 @@ test('contraste legível na tela de configurações nos dois temas (CSS_THEMES)'
       assert.ok(r >= 4.5, `${name} ${fg}/${bg}: ${r.toFixed(2)}`)
     }
   }
-  assert.equal(CSS_THEMES.dark.bg, '#141A21')
-  assert.equal(CSS_THEMES.dark.card, '#232D37')
-  assert.equal(CSS_THEMES.dark.accentText, '#4AAAA2')
+  assert.equal(CSS_THEMES.dark.bg, '#0B1A2B')
+  assert.equal(CSS_THEMES.dark.card, '#15293F')
+  assert.equal(CSS_THEMES.dark.accentText, '#6CC0FF')
   assert.equal(cssTheme('light'), CSS_THEMES.light)
   assert.equal(cssTheme('roxo'), CSS_THEMES.dark)
   assert.equal(cssTheme(memoryStorage({ [THEME_KEY]: 'light' })), CSS_THEMES.light)
@@ -200,7 +207,8 @@ test('tema escuro: elementos gráficos ≥ 3:1 e textos ≥ 4,5:1 onde ficam (re
   }
   // "+"/"−" grandes (28 px) sobre o botão: texto grande, 3:1.
   assert.ok(contrast(t.text, t.control) >= 3)
-  assert.ok(t.muted >= 0xb4bec2 && t.ring >= 0xb4bec2)
+  // Pontos e anel do mapa claros o bastante também na avenida mais clara do mapa.
+  assert.ok(contrast(t.muted, 0x27445f) >= 3 && contrast(t.ring, 0x27445f) >= 3)
 })
 
 test('tema escuro: elementos gráficos ≥ 3:1 e textos ≥ 4,5:1 (celular)', async () => {
@@ -214,9 +222,9 @@ test('tema escuro: elementos gráficos ≥ 3:1 e textos ≥ 4,5:1 (celular)', as
     const r = contrast(cssHex(t[fg]), cssHex(t[bg]))
     assert.ok(r >= 4.5, `dark ${fg}/${bg}: ${r.toFixed(2)}`)
   }
-  assert.equal(t.muted, '#B4BEC2')
-  assert.equal(t.fieldBg, '#1B232B')
-  assert.equal(t.cardSoft, '#2A3541')
+  assert.equal(t.muted, '#9DB2C8')
+  assert.equal(t.fieldBg, '#0F2236')
+  assert.equal(t.cardSoft, '#1A3049')
 })
 
 test('readThemeName lê e valida o settingsStorage', () => {
@@ -296,7 +304,7 @@ test('mixColor mistura canal a canal', async () => {
   assert.equal(mixColor(0x000000, 0xffffff, 0), 0x000000)
   assert.equal(mixColor(0x000000, 0xffffff, 1), 0xffffff)
   assert.equal(mixColor(0x000000, 0xffffff, 0.5), 0x808080)
-  assert.equal(mixColor(0x9aa5a8, 0x141a21, 2), 0x141a21)
+  assert.equal(mixColor(0x9db2c8, 0x0b1a2b, 2), 0x0b1a2b)
 })
 
 test('passedBusIcon: ícones cinza esmaecidos existem para os dois temas', async () => {
@@ -335,6 +343,13 @@ test('tela do ponto: texto direto sobre o mapa legível nos dois temas', async (
     const outlineVsMap = Math.min(...surfaces.map((s) => contrast(t.outline, s)))
     assert.ok(name === 'dark' ? luminance(t.outline) <= luminance(surfaces[0]) : luminance(t.outline) >= luminance(surfaces[0]), `${name}: contorno ${outlineVsMap.toFixed(2)}`)
   }
-  // Selo da linha: texto branco no verde-azulado.
-  assert.ok(contrast(CHIP_TEXT, CHIP_BG) >= 4.5)
+  // Selo da linha (cada tema) e os atalhos antigos (tema escuro).
+  for (const name of ['dark', 'light']) {
+    const t = THEMES[name]
+    assert.ok(contrast(t.chipText, t.chip) >= 4.5, `${name} selo`)
+    // Trecho até o ponto, seu ponto e rastro: gráficos ≥ 3:1 no fundo do tema.
+    for (const k of ['routeHi', 'chip', 'trail']) assert.ok(contrast(t[k], t.bg) >= 3, `${name}.${k}`)
+  }
+  assert.equal(CHIP_BG, THEMES.dark.chip)
+  assert.equal(CHIP_TEXT, THEMES.dark.chipText)
 })

@@ -9,13 +9,13 @@ test('base64 igual ao do Node (inclusive UTF-8)', () => {
 test('sol e lua: animados só quando escolhidos; cores pedidas', () => {
   const sun = sunSvg(true)
   assert.match(sun, /animateTransform[^>]*type="rotate"/)
-  assert.match(sun, /#FFB088/)
-  assert.match(sun, /#E8B23A/)
+  assert.match(sun, /#FFD166/)
+  assert.match(sun, /#FF8C42/)
   assert.doesNotMatch(sunSvg(false), /<animate/)
   const moon = moonSvg(true)
   assert.equal((moon.match(/<animate attributeName="opacity" values/g) || []).length, 3) // 3 estrelas piscando
-  assert.match(moon, /#F3E3C3/)
-  assert.match(moon, /#2E3A46/)
+  assert.match(moon, /#EAF2FB/)
+  assert.match(moon, /#27445F/)
   assert.doesNotMatch(moonSvg(false), /<animate/)
 })
 

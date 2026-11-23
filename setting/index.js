@@ -54,7 +54,7 @@ const TIME_OPTIONS = timeOptions(15)
 
 // Troca de estilo suave (re-render) e realce de toque do WebView.
 const SMOOTH = 'background-color 220ms ease, color 220ms ease, border-color 220ms ease, opacity 220ms ease'
-const TAP = 'rgba(46, 125, 120, 0.18)'
+const TAP = 'rgba(61, 169, 252, 0.18)' // azul-céu (#3DA9FC)
 
 AppSettingsPage({
   build(props) {
@@ -130,7 +130,7 @@ AppSettingsPage({
         [Text({ align: 'center', style: { fontSize: '14px', fontWeight: '600', color } }, label)]
       )
 
-    // Selo da linha: pílula pequena verde-azulada.
+    // Selo da linha: pílula pequena na cor de destaque do tema.
     const chip = (number) =>
       View(
         { style: { flexShrink: 0, minWidth: '44px', textAlign: 'center', background: C.chip, borderRadius: '10px', padding: '3px 8px', marginRight: '10px' } },
@@ -537,7 +537,7 @@ AppSettingsPage({
 
     return View({ style: { padding: '20px 18px 32px', background: C.bg, minHeight: '100vh', transition: SMOOTH } }, [
       Text({ bold: true, style: { fontSize: '24px', color: C.title } }, 'Cadê o Busão'),
-      // Barrinha com 4 cores do gradiente "Pôr do sol", igual à do relógio.
+      // Barrinha com 4 cores do gradiente "Azul BH e coral", igual à do relógio.
       View(
         { style: { display: 'flex', flexDirection: 'row', margin: '6px 0 10px' } },
         [C.gradient[1], C.gradient[3], C.gradient[4], C.gradient[5]].map((color) =>

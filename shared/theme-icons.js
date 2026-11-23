@@ -4,16 +4,17 @@
 // string": https://docs.zepp.com/docs/reference/app-settings-api/ui/image/).
 // Lógica pura (sem APIs do Zepp OS), testada em test/theme-icons.test.mjs.
 //
-// Os dois ficam num disco #2E3A46 (contraste bom nos dois temas da tela): sol
-// #FFB088 com raios #E8B23A; lua #F3E3C3 com estrelinhas. Animado (opção escolhida):
+// Os dois ficam num disco #27445F (azul da paleta "Azul BH e coral", contraste bom
+// nos dois temas da tela): sol #FFD166 com raios coral #FF8C42; lua #EAF2FB com
+// estrelinhas. Animado (opção escolhida):
 // o sol "nasce" e os raios giram devagar com um leve pulsar; a lua aparece e as
 // estrelas piscam. Estático (a outra opção): sem animação (a tela esmaece).
 
 export const ICON_SIZE = 40
-const DISC = '#2E3A46'
-const SUN = '#FFB088'
-const RAYS = '#E8B23A'
-const MOON = '#F3E3C3'
+const DISC = '#27445F'
+const SUN = '#FFD166'
+const RAYS = '#FF8C42'
+const MOON = '#EAF2FB'
 
 function rays() {
   const out = []

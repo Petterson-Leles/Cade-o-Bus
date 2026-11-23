@@ -24,11 +24,7 @@ import {
   busIcon,
   passedBusIcon,
   mixColor,
-  BUS_ICON_SIZE,
-  ROUTE_HIGHLIGHT,
-  TRAIL_COLOR,
-  CHIP_BG,
-  CHIP_TEXT
+  BUS_ICON_SIZE
 } from '../../utils/ui'
 import { etaNumberLayout, etaDigitSrc, etaMinSrc, ETA_SCALES } from '../../utils/eta-digits'
 import { parseDetailParams, parseSettingsResult } from '../../utils/favorites'
@@ -127,6 +123,7 @@ Page(
         busRemain: null, // quanto falta do ícone ao ponto, ao longo do trajeto (px)
         map: null, // último mapa recebido (já validado)
         lastFrame: null, // enquadramento do mapa em que busPos foi calculada
+        trailColor: null, // cor do rastro pontilhado (faixa de tempo do primeiro ônibus)
         again: false, // pedir de novo assim que a consulta atual terminar
         fade: null, // sumiço do ônibus que passou { timer, startedAt, pos, level }
         pillTimer: null,
@@ -206,10 +203,10 @@ Page(
       this.setVisible(w.tiles, false)
       this.state.tileKeys = []
       w.mapCanvas = this.widget(hmUI.widget.CANVAS, at(MAP_RECT))
-      // Seu ponto: halo verde-azulado, anel branco e miolo verde-azulado.
-      w.stopHalo = this.circle(13, mixColor(c.bg, CHIP_BG, 0.3))
+      // Seu ponto: halo e miolo na cor de destaque do tema, anel branco.
+      w.stopHalo = this.circle(13, mixColor(c.bg, c.chip, 0.3))
       w.stopWhite = this.circle(10, 0xffffff)
-      w.stopDot = this.circle(7, CHIP_BG)
+      w.stopDot = this.circle(7, c.chip)
       // Ônibus que acabou de passar (cinza, some devagar) e o rótulo "passou".
       w.passedIcon = this.widget(hmUI.widget.IMG, {
         x: px(MAP_CX - BUS_HALF),
@@ -248,8 +245,8 @@ Page(
       this.text({ ...at(L.title), text: fav.name, text_size: px(L.title.size), color: c.text })
       const lineText = String(fav.line)
       const chip = at(chipBox(this.textWidth(lineText, L.chip.size)))
-      this.widget(hmUI.widget.FILL_RECT, { ...chip, radius: Math.round(chip.h / 2), color: CHIP_BG })
-      this.text({ ...chip, text: lineText, text_size: px(L.chip.size), color: CHIP_TEXT })
+      this.widget(hmUI.widget.FILL_RECT, { ...chip, radius: Math.round(chip.h / 2), color: c.chip })
+      this.text({ ...chip, text: lineText, text_size: px(L.chip.size), color: c.chipText })
 
       // Número grande à esquerda: até 3 IMG de algarismo (cor da faixa) e o "min"
       // alinhado à base (setNumber). Começam escondidos.
@@ -274,8 +271,8 @@ Page(
       w.quiet = this.text({ ...at(L.quiet), text_size: px(L.quiet.size), color: c.mapMuted, text: this.state.quiet ? QUIET_NOTE : '' })
 
       // Pílula "Esse passou · vem o próximo" (por cima do rodapé, some sozinha).
-      w.pill = this.widget(hmUI.widget.FILL_RECT, { ...at(L.pill), radius: px(L.pill.h / 2), color: CHIP_BG })
-      w.pillText = this.text({ ...at({ ...L.pill, x: L.pill.x + 5, w: L.pill.w - 10 }), text: 'Esse passou · vem o próximo', text_size: px(18), color: CHIP_TEXT })
+      w.pill = this.widget(hmUI.widget.FILL_RECT, { ...at(L.pill), radius: px(L.pill.h / 2), color: c.chip })
+      w.pillText = this.text({ ...at({ ...L.pill, x: L.pill.x + 5, w: L.pill.w - 10 }), text: 'Esse passou · vem o próximo', text_size: px(18), color: c.chipText })
       this.setVisible([w.pill, w.pillText], false)
 
       // Estados sem dados (carregando, erro, sem conexão): título + detalhe.
@@ -662,10 +659,12 @@ Page(
       }
       if (map) {
         lines(map.route, c.route, ROUTE_W)
-        lines(map.hi, ROUTE_HIGHLIGHT, HI_W)
-        // Pontilhado coral sobre o caminho que o ônibus já fez (fica parado no mapa).
+        lines(map.hi, c.routeHi, HI_W)
+        // Pontilhado sobre o caminho que o ônibus já fez (fica parado no mapa), na
+        // cor da faixa de tempo do ônibus (sem ônibus: coral do tema).
+        const trail = this.state.trailColor || c.trail
         for (let i = 0; i + 1 < map.trail.length; i += 2) {
-          canvas.drawCircle({ center_x: cvx(map.trail[i]), center_y: cvy(map.trail[i + 1]), radius: px(TRAIL_R), color: TRAIL_COLOR })
+          canvas.drawCircle({ center_x: cvx(map.trail[i]), center_y: cvy(map.trail[i + 1]), radius: px(TRAIL_R), color: trail })
         }
         // Outros pontos da linha: bolinha vazada (só com zoom suficiente).
         if (!map.k || map.k >= MIN_K_FOR_STOPS) {
@@ -680,9 +679,9 @@ Page(
       }
       const stop = map ? map.stop : { x: 0, y: 0 }
       const pos = { center_x: px(MAP_CX + stop.x), center_y: px(MAP_CY + stop.y) }
-      w.stopHalo.setProperty(hmUI.prop.MORE, { ...pos, radius: px(13), color: mixColor(c.bg, CHIP_BG, 0.3) })
+      w.stopHalo.setProperty(hmUI.prop.MORE, { ...pos, radius: px(13), color: mixColor(c.bg, c.chip, 0.3) })
       w.stopWhite.setProperty(hmUI.prop.MORE, { ...pos, radius: px(10), color: 0xffffff })
-      w.stopDot.setProperty(hmUI.prop.MORE, { ...pos, radius: px(7), color: CHIP_BG })
+      w.stopDot.setProperty(hmUI.prop.MORE, { ...pos, radius: px(7), color: c.chip })
     },
 
     stopDots() {
@@ -870,6 +869,7 @@ Page(
         }
         // Sem ônibus, mas com o mapa (trajeto e ponto): recado onde fica o número.
         this.state.view = { kind: 'data', result }
+        this.state.trailColor = null
         this.showDataFrame(map)
         this.stopAnim()
         this.state.busPos = null
@@ -886,6 +886,7 @@ Page(
       const others = rest.slice(0, MAX_OTHERS)
       const hot = etaColor(first.etaMin, this.state.theme)
       this.state.view = { kind: 'data', result }
+      this.state.trailColor = hot
       this.showDataFrame(map)
 
       // Número grande (menor com 2 ou 3 dígitos) na cor da faixa e "min".
