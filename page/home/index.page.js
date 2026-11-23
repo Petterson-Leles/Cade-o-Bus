@@ -1,11 +1,13 @@
-// Tela inicial do relógio: saudação, título e um cartão por ponto salvo com o
-// tempo do próximo ônibus (resumo de todos os pontos num pedido só ao celular,
+// Tela inicial do relógio: saudação, título "Seus pontos" e um item por ponto
+// salvo com o tempo do próximo ônibus; só o ponto com o ônibus mais perto fica
+// num cartão (os outros ficam soltos, sem fundo) (resumo de todos os pontos num pedido só ao celular,
 // atualizado a cada 30 s).
 import * as hmUI from '@zos/ui'
 import { px } from '@zos/utils'
 import { push } from '@zos/router'
 import { BasePage } from '@zeppos/zml/base-page'
-import { DEVICE_WIDTH, DEVICE_HEIGHT, getTheme, DEFAULT_THEME, GRADIENT, etaColor, busIcon } from '../../utils/ui'
+import { DEVICE_WIDTH, DEVICE_HEIGHT, getTheme, DEFAULT_THEME, etaColor, busIcon } from '../../utils/ui'
+import { nearestIndex, chipColors } from '../../utils/home-list'
 import { parseSettingsResult } from '../../utils/favorites'
 import { etaFromSummary } from '../../shared/summary'
 import { greeting } from '../../shared/text'
@@ -41,17 +43,18 @@ const REFRESH_MS = 30 * 1000
 // Tela redonda: margens maiores no topo e nas laterais.
 const MARGIN = px(60)
 const CONTENT_W = DEVICE_WIDTH - 2 * MARGIN
-// Cartões (pixels de design): o do meio é mais largo, onde a tela redonda é mais larga.
-const LIST_TOP = 142
+// Itens (pixels de design): o do meio é mais largo, onde a tela redonda é mais
+// larga; os cantos dos itens de cima e de baixo ficam dentro do círculo.
+const LIST_TOP = 128
 const CARD_H = 82
-const CARD_STEP = 94
-const CARD_R = 22
-const cardX = (i) => (i === 1 ? 54 : 72)
-// Barrinha sob o título: segmentos com cores do gradiente "Azul BH e coral"
-// (azul-céu, amarelo, coral e rosa-coral).
-const BAR_COLORS = [GRADIENT[1], GRADIENT[3], GRADIENT[4], GRADIENT[5]]
-const BAR_SEG_W = 16
-const BAR_GAP = 2
+const CARD_STEP = 90
+const CARD_R = 26
+const cardX = (i) => (i === 1 ? 54 : 66)
+const ITEM_PAD = 20 // margem interna à esquerda e à direita
+const ETA_W = 70 // coluna dos minutos, à direita
+const CHIP_H = 32
+const CHIP_R = 12
+const chipW = (line) => (String(line).length > 4 ? 76 : 64)
 // Espaço no fim para o último cartão poder rolar até o meio da tela redonda.
 const LIST_BOTTOM_PAD = 120
 // Toque que arrastou mais que isso foi rolagem, não toque.
@@ -65,7 +68,8 @@ Page(
       // view: 'loading' | 'error' | 'list' (favorites só vale em 'list').
       const fresh = {
         widgets: [],
-        cards: [], // { fav, eta, etaMin } por favorito (widgets do tempo)
+        cards: [], // { fav, eta, etaMin, bg, chip, chipLabel, ... } por favorito
+        highlight: -1, // índice do item no cartão (ônibus mais perto) ou -1
         theme: DEFAULT_THEME,
         view: 'loading',
         favorites: [],
@@ -268,20 +272,41 @@ Page(
     applySummary(result) {
       if (this.state.destroyed) return
       this.state.summary = result
-      this.state.cards.forEach((card, i) => this.paintEta(card, etaFromSummary(result, card.fav, i)))
+      const etas = this.state.cards.map((card, i) => etaFromSummary(result, card.fav, i))
+      this.state.cards.forEach((card, i) => this.paintEta(card, etas[i]))
+      // O cartão vai para o ponto com o ônibus mais perto (pode trocar de item).
+      this.paintHighlight(nearestIndex(etas))
     },
 
-    // Tempo à direita do cartão: minutos na cor da faixa ou "—".
+    // Tempo à direita do item: minutos grandes na cor da faixa (ou "—") e "min" pequeno.
     paintEta(card, min) {
       const c = this.colors()
       if (min === null) {
-        card.eta.setProperty(hmUI.prop.MORE, { text: '—', color: c.muted })
+        card.eta.setProperty(hmUI.prop.MORE, { text: '—', color: c.muted, text_size: px(36) })
         card.etaMin.setProperty(hmUI.prop.TEXT, '')
         return
       }
       const color = etaColor(min, this.state.theme)
-      card.eta.setProperty(hmUI.prop.MORE, { text: String(min), color, text_size: px(min >= 100 ? 26 : 34) })
-      card.etaMin.setProperty(hmUI.prop.MORE, { text: 'min', color })
+      card.eta.setProperty(hmUI.prop.MORE, { text: String(min), color, text_size: px(min >= 100 ? 28 : 36) })
+      card.etaMin.setProperty(hmUI.prop.MORE, { text: 'min', color: c.muted })
+    },
+
+    // Liga o cartão (fundo + selo cheio) no item `index` e desliga nos outros,
+    // mexendo só nos widgets que mudam (setProperty, sem redesenhar a lista).
+    paintHighlight(index) {
+      const s = this.state
+      const c = this.colors()
+      s.cards.forEach((card, i) => {
+        const hi = i === index
+        if (hi === card.hi) return
+        card.hi = hi
+        card.bg.setProperty(hmUI.prop.MORE, { ...card.bgRect, color: c.card })
+        card.bg.setProperty(hmUI.prop.VISIBLE, hi)
+        const chip = chipColors(c, hi)
+        card.chip.setProperty(hmUI.prop.MORE, { ...card.chipRect, color: chip.bg })
+        card.chipLabel.setProperty(hmUI.prop.MORE, { color: chip.text })
+      })
+      s.highlight = index
     },
 
     // ---- Desenho ----
@@ -290,6 +315,7 @@ Page(
       this.state.widgets.forEach((w) => hmUI.deleteWidget(w))
       this.state.widgets = []
       this.state.cards = []
+      this.state.highlight = -1
     },
 
     add(type, opts) {
@@ -336,14 +362,9 @@ Page(
       }
 
       // Saudação.
-      this.text({ x: px(100), y: px(46), w: DEVICE_WIDTH - 2 * px(100), h: px(30), text: greeting(new Date().getHours()), text_size: px(22), color: c.muted })
-      this.text({ x: px(70), y: px(74), w: DEVICE_WIDTH - 2 * px(70), h: px(44), text: 'Cadê o Busão', text_size: px(34), color: c.title })
-      // Barrinha em segmentos do gradiente (azul-céu até o coral) sob o título.
-      const barW = BAR_COLORS.length * BAR_SEG_W + (BAR_COLORS.length - 1) * BAR_GAP
-      const barX = (480 - barW) / 2
-      BAR_COLORS.forEach((color, i) => {
-        this.add(hmUI.widget.FILL_RECT, { x: px(barX + i * (BAR_SEG_W + BAR_GAP)), y: px(120), w: px(BAR_SEG_W), h: px(4), radius: px(2), color })
-      })
+      // Saudação pequena e título (sem a barrinha colorida).
+      this.text({ x: px(110), y: px(44), w: DEVICE_WIDTH - 2 * px(110), h: px(28), text: greeting(new Date().getHours()), text_size: px(21), color: c.muted })
+      this.text({ x: px(80), y: px(72), w: DEVICE_WIDTH - 2 * px(80), h: px(44), text: 'Seus pontos', text_size: px(32), color: c.title })
 
       if (view === 'loading') {
         this.drawMessage('Carregando pontos...', null, c.muted)
@@ -392,27 +413,36 @@ Page(
       push({ url: 'page/detail/index.page', params: JSON.stringify(params) })
     },
 
-    // Os textos ficam por cima do botão do cartão; se eles segurarem o toque,
-    // abrem o ponto também (ignorando arrastos, que são rolagem da lista).
-    tappable(widget, fav) {
+    // O cartão e os textos ficam por cima do botão do item; se eles segurarem o
+    // toque, abrem o ponto também (ignorando arrastos, que são rolagem da lista).
+    // `card` (opcional): escurece o cartão destacado enquanto o dedo está nele.
+    tappable(widget, fav, card) {
       let down = null
+      const press = (on) => {
+        if (card && card.hi) card.bg.setProperty(hmUI.prop.MORE, { ...card.bgRect, color: on ? this.colors().cardPressed : this.colors().card })
+      }
       widget.addEventListener(hmUI.event.CLICK_DOWN, (info) => {
         down = info ? { x: info.x, y: info.y } : null
+        press(true)
       })
       widget.addEventListener(hmUI.event.CLICK_UP, (info) => {
         const moved = down && info ? Math.hypot(info.x - down.x, info.y - down.y) : 0
         down = null
+        press(false)
         if (moved <= px(TAP_SLOP)) this.open(fav)
       })
     },
 
     drawList(favorites) {
       const c = this.colors()
+      const etas = favorites.map((fav, i) => etaFromSummary(this.state.summary, fav, i))
+      const highlight = nearestIndex(etas)
       favorites.forEach((fav, i) => {
         const x = cardX(i)
         const y = LIST_TOP + i * CARD_STEP
         const w = 480 - 2 * x
-        // Fundo do cartão: botão arredondado (muda de cor ao tocar).
+        const hi = i === highlight
+        // Botão do item na cor do fundo (sem borda): some no fundo e acende ao tocar.
         this.add(hmUI.widget.BUTTON, {
           x: px(x),
           y: px(y),
@@ -420,40 +450,53 @@ Page(
           h: px(CARD_H),
           radius: px(CARD_R),
           text: '',
-          normal_color: c.card,
+          normal_color: c.bg,
           press_color: c.cardPressed,
           click_func: () => this.open(fav)
         })
-        const overlay = []
-        overlay.push(this.add(hmUI.widget.STROKE_RECT, { x: px(x), y: px(y), w: px(w), h: px(CARD_H), radius: px(CARD_R), line_width: px(2), color: c.cardEdge }))
-        // Selo da linha (pílula na cor de destaque do tema).
-        overlay.push(this.add(hmUI.widget.FILL_RECT, { x: px(x + 14), y: px(y + 21), w: px(68), h: px(40), radius: px(20), color: c.chip }))
-        overlay.push(this.text({ x: px(x + 16), y: px(y + 21), w: px(64), h: px(40), text: fav.line, text_size: px(fav.line.length > 4 ? 18 : 22), color: c.chipText }))
-        // Nome (sem negrito: o TEXT do Zepp OS não tem peso de fonte) e rua do ponto.
-        const textW = w - 96 - 78
-        overlay.push(this.text({ x: px(x + 94), y: px(y + 10), w: px(textW), h: px(36), text: fav.name, text_size: px(27), color: c.text, align_h: hmUI.align.LEFT }))
-        overlay.push(
-          this.text({
-            x: px(x + 94),
-            y: px(y + 46),
-            w: px(textW),
-            h: px(26),
-            text: fav.street || (fav.stopId ? '' : 'ponto por coordenadas'),
-            text_size: px(19),
-            color: c.muted,
-            align_h: hmUI.align.LEFT
-          })
-        )
-        // Tempo do próximo ônibus, à direita.
-        const eta = this.text({ x: px(x + w - 80), y: px(y + 8), w: px(70), h: px(42), text: '—', text_size: px(34), color: c.muted })
-        const etaMin = this.text({ x: px(x + w - 80), y: px(y + 48), w: px(70), h: px(22), text: '', text_size: px(17), color: c.muted })
-        overlay.push(eta, etaMin)
-        overlay.forEach((wd) => this.tappable(wd, fav))
-        const card = { fav, eta, etaMin }
+        // Cartão (só no ônibus mais perto): FILL_RECT de cantos bem redondos, sem
+        // contorno. Existe em todos os itens e liga/desliga com VISIBLE.
+        const bgRect = { x: px(x), y: px(y), w: px(w), h: px(CARD_H), radius: px(CARD_R) }
+        const bg = this.add(hmUI.widget.FILL_RECT, { ...bgRect, color: c.card })
+        if (!hi) bg.setProperty(hmUI.prop.VISIBLE, false)
+        // Selo da linha + nome na mesma linha; rua menor embaixo.
+        const cw = chipW(fav.line)
+        const chipRect = { x: px(x + ITEM_PAD), y: px(y + 10), w: px(cw), h: px(CHIP_H), radius: px(CHIP_R) }
+        const chipCol = chipColors(c, hi)
+        const chip = this.add(hmUI.widget.FILL_RECT, { ...chipRect, color: chipCol.bg })
+        const chipLabel = this.text({
+          x: px(x + ITEM_PAD + 2),
+          y: px(y + 10),
+          w: px(cw - 4),
+          h: px(CHIP_H),
+          text: fav.line,
+          text_size: px(fav.line.length > 4 ? 17 : 20),
+          color: chipCol.text
+        })
+        // Nome (sem negrito: o TEXT do Zepp OS não tem peso de fonte).
+        const nameX = x + ITEM_PAD + cw + 10
+        const name = this.text({ x: px(nameX), y: px(y + 8), w: px(x + w - ITEM_PAD - ETA_W - 8 - nameX), h: px(36), text: fav.name, text_size: px(26), color: c.text, align_h: hmUI.align.LEFT })
+        const street = this.text({
+          x: px(x + ITEM_PAD),
+          y: px(y + 46),
+          w: px(w - 2 * ITEM_PAD - ETA_W - 8),
+          h: px(26),
+          text: fav.street || (fav.stopId ? '' : 'ponto por coordenadas'),
+          text_size: px(19),
+          color: c.muted,
+          align_h: hmUI.align.LEFT
+        })
+        // Minutos grandes à direita, "min" pequeno embaixo.
+        const etaX = x + w - ITEM_PAD - ETA_W
+        const eta = this.text({ x: px(etaX), y: px(y + 4), w: px(ETA_W), h: px(46), text: '—', text_size: px(36), color: c.muted, align_h: hmUI.align.RIGHT })
+        const etaMin = this.text({ x: px(etaX), y: px(y + 50), w: px(ETA_W), h: px(22), text: '', text_size: px(17), color: c.muted, align_h: hmUI.align.RIGHT })
+        const card = { fav, eta, etaMin, bg, bgRect, chip, chipRect, chipLabel, hi }
+        ;[bg, chip, chipLabel, name, street, eta, etaMin].forEach((wd) => this.tappable(wd, fav, card))
         this.state.cards.push(card)
-        this.paintEta(card, etaFromSummary(this.state.summary, fav, i))
+        this.paintEta(card, etas[i])
       })
-      // A página rola sozinha quando os cartões passam da altura da tela
+      this.state.highlight = highlight
+      // A página rola sozinha quando os itens passam da altura da tela
       // (SCROLL_MODE_FREE é o padrão do Zepp OS); o fundo já vai até o fim da lista.
     },
 

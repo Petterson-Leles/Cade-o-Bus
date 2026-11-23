@@ -52,6 +52,10 @@ export const THEMES = Object.freeze({
     // Selo da linha (pílula) e o seu ponto no mapa; trecho do ônibus até o ponto.
     chip: 0x3da9fc,
     chipText: 0x06121f, // 7.4:1
+    // Selo suave (tela inicial, pontos fora do cartão): 18 % do chip sobre o fundo
+    // (= mixColor(bg, chip, 0.18); FILL_RECT/TEXT não têm alpha) e texto no destaque.
+    chipSoft: 0x143451,
+    chipSoftText: 0x3da9fc, // 5.1:1 sobre chipSoft
     routeHi: 0x3da9fc, // 4.0:1 na avenida
     // Rastro pontilhado quando não há faixa de tempo (coral).
     trail: 0xff8c42
@@ -81,6 +85,9 @@ export const THEMES = Object.freeze({
     outline: 0xffffff, // contorno claro dos algarismos e do "min"
     chip: 0x1565c0,
     chipText: 0xffffff, // 5.8:1
+    chipSoft: 0xc7daf0, // mixColor(bg, chip, 0.18)
+    // O azul do chip (#1565C0) dava 4.0:1 sobre chipSoft: um tom mais escuro.
+    chipSoftText: 0x0f4f9a, // 5.7:1 sobre chipSoft
     routeHi: 0x1565c0,
     trail: 0xd9620f
   })
