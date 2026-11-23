@@ -2,6 +2,7 @@
 // projeção local, posição do ônibus ao longo do trajeto e recorte do mini mapa.
 // O side service usa isso e manda ao relógio só pontos já em pixels.
 import { simplifyXY } from './polyline.js'
+import { stopKindCode, parseStopKinds } from './stop-icons.js'
 import { MAP_BUS_MAX_R, TRAIL_M, TRAIL_SPACING_PX, MAX_TRAIL_DOTS, dotsAlong } from './map-frame.js'
 
 export { MAP_BUS_MAX_R }
@@ -23,7 +24,7 @@ export const MIN_HEADING_SPEED_KMH = 5
 export const MAX_HEADING_DIFF_DEG = 90
 // Trajeto cujo início e fim ficam a menos disso é circular.
 export const LOOP_GAP_M = 300
-// No máximo tantos pontos de ônibus no mapa (cada um vira um CIRCLE no relógio).
+// No máximo tantos pontos de ônibus no mapa (losango no canvas ou ícone IMG no relógio).
 export const MAX_MAP_STOPS = 16
 
 const toNum = (v) => (typeof v === 'number' ? v : Number(String(v === undefined || v === null ? '' : v).trim().replace(',', '.')))
@@ -304,17 +305,18 @@ export function pixelPosition(project, lat, lon, pxPerM, maxR) {
 // Tudo o que o relógio desenha no mini mapa, em pixels de design relativos ao
 // centro do mapa:
 //   { r, k, stop: { x, y }, route: [[x, y, ...]], hi: [[x, y, ...]], trail: [x, y, ...],
-//     stops: [x, y, ...], buses: [{ x, y, clamped }], passed?: { x, y, clamped, vehicle, at } }
+//     stops: [x, y, ...], kinds: 'smc...', buses: [{ x, y, clamped }], passed?: { x, y, clamped, vehicle, at } }
 // - center: centro do mapa em metros na projeção do ponto (padrão: o próprio ponto);
 //   pxPerKm: escala (ver chooseFrame em map-frame.js); radiusM: raio do recorte.
 // - route: trajeto recortado ao círculo; hi: trecho do 1º ônibus até o ponto,
 //   saindo exatamente de onde o ícone do ônibus é desenhado;
 // - trail: bolinhas sobre o trajeto já percorrido pelo 1º ônibus (até trailM atrás dele);
-// - stops: outros pontos da linha dentro do círculo; buses: na mesma ordem de `buses`
+// - stops: outros pontos da linha dentro do círculo; kinds: o tipo de cada um
+//   ('s' rua, 'm' MOVE, 'c' estação central); buses: na mesma ordem de `buses`
 //   (no trajeto quando o ônibus está nele, senão a posição do GPS);
 // - passed: ônibus que acabou de passar do ponto ({ lat, lon, along?, vehicle, at }).
 // ctx vem de routeContext (pode ser null: só os ônibus em linha reta).
-// buses: [{ lat, lon, route?: saída de busOnRoute }]; lineStops: [{ lat, lon, id }].
+// buses: [{ lat, lon, route?: saída de busOnRoute }]; lineStops: [{ lat, lon, id, station? }].
 export function buildMapPayload({
   ctx,
   stop,
@@ -335,7 +337,7 @@ export function buildMapPayload({
   const project = ctx ? ctx.project : stop ? makeProjection(stop) : null
   const cx = center && Number.isFinite(center[0]) ? center[0] : 0
   const cy = center && Number.isFinite(center[1]) ? center[1] : 0
-  const payload = { r, k: Math.round(pxPerKm), stop: { x: Math.round(-cx * pxPerM) || 0, y: Math.round(-cy * pxPerM) || 0 }, route: [], hi: [], trail: [], stops: [], buses: [] }
+  const payload = { r, k: Math.round(pxPerKm), stop: { x: Math.round(-cx * pxPerM) || 0, y: Math.round(-cy * pxPerM) || 0 }, route: [], hi: [], trail: [], stops: [], kinds: '', buses: [] }
   if (!project) return payload
   // Metros (projeção do ponto) -> metros relativos ao centro do mapa.
   const shift = (pts) => pts.map((p) => [p[0] - cx, p[1] - cy])
@@ -369,15 +371,23 @@ export function buildMapPayload({
       )
     }
   }
+  // Outros pontos da linha na vista, com o tipo (kinds: uma letra por ponto, 's' rua,
+  // 'm' estação MOVE, 'c' estação central; shared/stop-icons.js). Passando de
+  // maxStops, as estações ficam primeiro (central, depois MOVE) e o resto na ordem.
   const stopId = stop && stop.id !== undefined ? String(stop.id) : null
-  for (let i = 0; i < lineStops.length && payload.stops.length < maxStops * 2; i++) {
+  const seen = []
+  for (let i = 0; i < lineStops.length; i++) {
     const s = lineStops[i]
     if (stopId !== null && String(s.id) === stopId) continue
     const [mx, my] = project(s.lat, s.lon)
     if (!inView(mx - cx, my - cy)) continue
     if (Math.hypot(mx, my) * pxPerM < 1) continue // em cima do ponto do usuário
-    payload.stops.push(Math.round((mx - cx) * pxPerM) || 0, Math.round((my - cy) * pxPerM) || 0)
+    seen.push({ i, x: Math.round((mx - cx) * pxPerM) || 0, y: Math.round((my - cy) * pxPerM) || 0, code: stopKindCode(s) })
   }
+  const rank = { c: 0, m: 1, s: 2 }
+  const kept = seen.length <= maxStops ? seen : seen.slice().sort((a, b) => rank[a.code] - rank[b.code] || a.i - b.i).slice(0, maxStops).sort((a, b) => a.i - b.i)
+  kept.forEach((p) => payload.stops.push(p.x, p.y))
+  payload.kinds = kept.map((p) => p.code).join('')
   const maxR = busMaxR === undefined ? r : busMaxR
   // Dentro da área dos ícones? busBox { hx, hy } (retângulo, px) ou o raio maxR.
   const inBox = (x, y) => (busBox ? Math.abs(x) <= busBox.hx && Math.abs(y) <= busBox.hy : Math.hypot(x, y) <= maxR)
@@ -460,6 +470,7 @@ export function sanitizeMapPayload(map, limit = 300) {
     hi: pieces(map.hi),
     trail: (flat(map.trail) || []).slice(0, 400),
     stops: flat(map.stops) || [],
+    kinds: '',
     buses: Array.isArray(map.buses) ? map.buses.map(point) : [],
     passed: null,
     // Mapa de ruas: nível fixo usado (índice) e centro do enquadramento em metros
@@ -467,6 +478,8 @@ export function sanitizeMapPayload(map, limit = 300) {
     level: Number.isInteger(map.level) && map.level >= 0 && map.level <= 5 ? map.level : null,
     center: [0, 0]
   }
+  // Tipo de cada ponto (uma letra por ponto); inválido ou ausente: tudo ponto de rua.
+  out.kinds = parseStopKinds(map.kinds, out.stops.length / 2)
   const c = map.center
   if (Array.isArray(c) && c.length === 2 && c.every((v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 100000)) {
     out.center = [Math.round(c[0] * 10) / 10, Math.round(c[1] * 10) / 10]

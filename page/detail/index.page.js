@@ -32,7 +32,9 @@ import { mapOffset, infoParts, parseBusesResult } from '../../utils/detail-view'
 import { animationPath, pathLength } from '../../shared/route-map'
 import { startAnimation, animFrame, ANIM_TICK_MS } from '../../shared/bus-anim'
 import { MAP_VIEW } from '../../shared/map-frame'
-import { LAYOUT, MAP_CX, MAP_CY, MAP_RECT, chipBox, estimateTextWidth, tileView, demandView } from '../../shared/detail-layout'
+import { LAYOUT, MAP_CX, MAP_CY, MAP_RECT, chipBox, estimateTextWidth, tileView, demandView, stopIconFits } from '../../shared/detail-layout'
+// Ícones dos pontos no mapa: losango (rua), "M" (MOVE) e hexágono (estação central).
+import { pickStopIcons, stopIconSrc, diamondPoints, STOP_ICON_HALF, STOP_ICON_SIZE, MAX_BIG_ICONS } from '../../shared/stop-icons'
 import { fadeFrame, passedKey, PASS_PILL_MS } from '../../shared/passing'
 import { guard } from '../../utils/crash'
 import { tileInfo, touchTiles, saveManifest, canReceiveFiles, watchDiag } from '../../utils/map-store'
@@ -67,7 +69,6 @@ const MAX_TILES = 9
 
 const BUS_HALF = BUS_ICON_SIZE / 2
 const OTHER_R = 7 // marcadores dos seguintes
-const LINE_STOP_R = 4 // outros pontos da linha
 const TRAIL_R = 2 // bolinhas do rastro
 const ROUTE_W = 4 // espessura do trajeto
 const HI_W = 7 // espessura do trecho ônibus -> ponto
@@ -75,6 +76,9 @@ const HI_W = 7 // espessura do trecho ônibus -> ponto
 // Coordenada do mapa (relativa ao centro do mapa, px de design) -> pixel do canvas.
 const cvx = (v) => px(MAP_CX - MAP_RECT.x + v)
 const cvy = (v) => px(MAP_CY - MAP_RECT.y + v)
+// Lado em px físicos dos PNG dos ícones grandes dos pontos (assets/common.r/stop/,
+// gerados por scripts/build-stop-icons.py no tamanho exato: sem auto_scale).
+const stopIconPx = (kind) => Math.round(px(STOP_ICON_SIZE[kind]))
 
 // Largura centralizada que cabe na tela redonda a partir de uma margem lateral.
 const box = (margin) => ({ x: margin, w: DEVICE_WIDTH - 2 * margin })
@@ -203,6 +207,14 @@ Page(
       this.setVisible(w.tiles, false)
       this.state.tileKeys = []
       w.mapCanvas = this.widget(hmUI.widget.CANVAS, at(MAP_RECT))
+      // Estações no mapa ("M" e hexágono, PNG por tema): por cima do trajeto e embaixo
+      // do seu ponto e dos ônibus. Começam escondidas (drawMap posiciona).
+      w.stopIcons = []
+      for (let i = 0; i < MAX_BIG_ICONS; i++) {
+        const size = stopIconPx('move')
+        w.stopIcons.push(this.widget(hmUI.widget.IMG, { x: 0, y: 0, w: size, h: size, src: stopIconSrc('move', theme) }))
+      }
+      this.setVisible(w.stopIcons, false)
       // Seu ponto: halo e miolo na cor de destaque do tema, anel branco.
       w.stopHalo = this.circle(13, mixColor(c.bg, c.chip, 0.3))
       w.stopWhite = this.circle(10, 0xffffff)
@@ -547,6 +559,7 @@ Page(
       const canvas = w.mapCanvas
       if (canvas) canvas.clear({ x: 0, y: 0, w: px(MAP_RECT.w), h: px(MAP_RECT.h) })
       if (w.tiles) this.setVisible(w.tiles, false)
+      if (w.stopIcons) this.setVisible(w.stopIcons, false)
       this.setMapDiag('')
     },
 
@@ -666,22 +679,51 @@ Page(
         for (let i = 0; i + 1 < map.trail.length; i += 2) {
           canvas.drawCircle({ center_x: cvx(map.trail[i]), center_y: cvy(map.trail[i + 1]), radius: px(TRAIL_R), color: trail })
         }
-        // Outros pontos da linha: bolinha vazada (só com zoom suficiente).
-        if (!map.k || map.k >= MIN_K_FOR_STOPS) {
-          canvas.setPaint({ color: c.muted, line_width: px(2) })
-          for (let i = 0; i + 1 < map.stops.length; i += 2) {
-            const cx = cvx(map.stops[i])
-            const cy = cvy(map.stops[i + 1])
-            canvas.drawCircle({ center_x: cx, center_y: cy, radius: px(LINE_STOP_R), color: c.bg })
-            canvas.strokeCircle({ center_x: cx, center_y: cy, radius: px(LINE_STOP_R), color: c.muted })
-          }
-        }
+        this.drawStopIcons(map)
       }
       const stop = map ? map.stop : { x: 0, y: 0 }
       const pos = { center_x: px(MAP_CX + stop.x), center_y: px(MAP_CY + stop.y) }
       w.stopHalo.setProperty(hmUI.prop.MORE, { ...pos, radius: px(13), color: mixColor(c.bg, c.chip, 0.3) })
       w.stopWhite.setProperty(hmUI.prop.MORE, { ...pos, radius: px(10), color: 0xffffff })
       w.stopDot.setProperty(hmUI.prop.MORE, { ...pos, radius: px(7), color: c.chip })
+    },
+
+    // Outros pontos da linha (shared/stop-icons.js pickStopIcons): losangos no canvas
+    // (só com zoom suficiente) e estações em IMG, sem sobreposição forte (fica o mais
+    // importante: central > MOVE > rua) e sem ícone grande atrás dos textos.
+    drawStopIcons(map) {
+      const w = this.state.w
+      const c = this.colors()
+      const theme = this.state.theme
+      const canvas = w.mapCanvas
+      const icons = pickStopIcons(map.stops, map.kinds, {
+        user: map.stop,
+        showStreets: !map.k || map.k >= MIN_K_FOR_STOPS,
+        fitsBig: stopIconFits,
+        maxBig: w.stopIcons.length
+      })
+      let big = 0
+      const h = px(STOP_ICON_HALF.street)
+      canvas.setPaint({ color: c.mapMuted, line_width: px(2) })
+      icons.forEach((it) => {
+        if (it.kind === 'street') {
+          const pts = diamondPoints(cvx(it.x), cvy(it.y), h)
+          canvas.drawPoly({ data_array: pts, color: c.bg })
+          canvas.strokePoly({ data_array: pts, color: c.mapMuted })
+          return
+        }
+        const img = w.stopIcons[big++]
+        if (!img) return
+        const size = stopIconPx(it.kind)
+        img.setProperty(hmUI.prop.MORE, {
+          x: Math.round(px(MAP_CX + it.x) - size / 2),
+          y: Math.round(px(MAP_CY + it.y) - size / 2),
+          w: size,
+          h: size,
+          src: stopIconSrc(it.kind, theme)
+        })
+        img.setProperty(hmUI.prop.VISIBLE, true)
+      })
     },
 
     stopDots() {

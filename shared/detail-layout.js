@@ -98,3 +98,28 @@ export function boxesOverlap(a, b) {
 export function iconArea(view = MAP_VIEW) {
   return { x0: MAP_CX - view.hx, x1: MAP_CX + view.hx, y0: MAP_CY - view.hy, y1: MAP_CY + view.hy }
 }
+
+// Ícones grandes dos pontos no mapa ("M" das estações MOVE e hexágono das estações
+// centrais, shared/stop-icons.js): não podem ficar atrás do nome do ponto, do selo,
+// do número grande e dos textos do rodapé. Caixas em px de design da tela (o selo
+// com a largura máxima, o número com a área toda do LAYOUT.eta).
+export const STOP_ICON_KEEP_OUT = Object.freeze(
+  [
+    LAYOUT.title,
+    { x: SCREEN_R - LAYOUT.chip.maxW / 2, y: LAYOUT.chip.y, w: LAYOUT.chip.maxW, h: LAYOUT.chip.h },
+    LAYOUT.eta,
+    LAYOUT.etaAge,
+    LAYOUT.mapDiag,
+    LAYOUT.info,
+    LAYOUT.next,
+    LAYOUT.quiet
+  ].map((b) => Object.freeze({ x: b.x, y: b.y, w: b.w, h: b.h }))
+)
+
+// O ícone grande de meia largura `half` com centro em (x, y) (px de design relativos
+// ao centro do mapa) cabe: inteiro dentro da tela redonda e fora dos textos?
+export function stopIconFits(x, y, half) {
+  const b = { x: MAP_CX + x - half, y: MAP_CY + y - half, w: 2 * half, h: 2 * half }
+  if (!boxInsideCircle(b, 2)) return false
+  return STOP_ICON_KEEP_OUT.every((k) => !boxesOverlap(b, k))
+}

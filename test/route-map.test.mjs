@@ -192,6 +192,8 @@ test('sanitizeMapPayload descarta o que não for inteiro em faixa', () => {
     hi: [],
     trail: [],
     stops: [1, 2, 3, 4],
+    // Sem `kinds`: todos viram ponto de rua.
+    kinds: 'ss',
     buses: [{ x: 1, y: -2, clamped: true }, null, null],
     passed: null,
     level: null,
